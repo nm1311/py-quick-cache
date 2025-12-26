@@ -1,125 +1,145 @@
 """Objectives: 
-    [] Store key-value pairs in a dictionary
-    [] Implement TTL (Time To Live) functionality for cache entries
-    [] Remove expired entries automatically
-    [] Provide methods to get, set, and delete cache entries
+    [-] Store key-value pairs in a dictionary
+    [-] Implement TTL (Time To Live) functionality for cache entries
+    [-] Remove expired entries automatically
+    [-] Provide methods to get, set, and delete cache entries
+    [-] Implement a method to print the current state of the cache
+    [-] Convert the code into a class-based structure for better organization
+    [-] Implement a method to get the current size of the cache
+    [-] Implement a method to cleanup the expired entries in the cache
 """
-
 
 from datetime import datetime, timedelta 
 
-cache = {
-    # "key" : ("value", "expiration_time (now + timedelta(ttl_sec))", "TTL"), 
-}
+class InMemoryCache:
 
-def is_expired(key):
-    global cache
-    return datetime.now() > cache[key][1]
+    # Class-level constants
+    ERROR_TTL_INVALID = "TTL must be a positive natural number"
+    ERROR_KEY_NOT_EXIST = "Key doesn't exist or is expired"
+    ERROR_KEY_EXISTS = "A valid Key already exists"
+
+
+    def __init__(self):
+        self.cache = {
+            # "key" : ("value", "expiration_time (now + timedelta(ttl_sec))", "TTL"),
+        }
+
+
+    def _is_expired(self, key):
+        return key in self.cache and datetime.now() > self.cache[key][1]
     
 
-def add_cache_item(key, value, ttl_sec):
-    global cache
+    def add(self, key, value, ttl_sec):
+        try:
+            ttl = int(ttl_sec)
+        except ValueError: 
+            return (False, self.ERROR_TTL_INVALID)
+        
+        if ttl <= 0:
+            return(False, self.ERROR_TTL_INVALID)
+        
+        if (key in self.cache):
+            # Key expiry check
+            if (not self._is_expired(key)):
+                return (False, self.ERROR_KEY_EXISTS)
 
-    try:
-        ttl = int(ttl_sec)
-    except ValueError: 
-        return (False, "TTL should be a positive natural number")
+        # Add a new cache entry as no valid key exists
+        self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
+        return (True, "Key added")
     
-    if ttl <= 0:
-        return(False, "TTL should be a positive natural number")
+
+    def update(self, key, value, ttl_sec):
+        try:
+            ttl = int(ttl_sec)
+        except ValueError: 
+            return (False, self.ERROR_TTL_INVALID)
+        
+        if ttl <= 0:
+            return(False, self.ERROR_TTL_INVALID)
+
+        if key not in self.cache:
+            return(False, self.ERROR_KEY_NOT_EXIST)
+
+        self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
+        return (True, "Key updated")
+
+
+    def get(self, key):
+        if key not in self.cache:
+            return (False, self.ERROR_KEY_NOT_EXIST)
+
+        if (self._is_expired(key)):
+            self.cache.pop(key)
+            return (False, self.ERROR_KEY_NOT_EXIST)
+        return (True, self.cache[key][0])
     
-    if (key in cache):
-        # Key expiry check
-        if (not is_expired(key)):
-            return (False, "A valid Key already exists")
 
-    # Add a new cache entry as no valid key exists
-    cache[key] = (value, datetime.now()+timedelta(seconds=ttl), ttl_sec)
-    return (True, "Key and Value successfully added in cache")
-
-
-def get_cache_item(key):
-    global cache
-
-    if key not in cache:
-        return (False, "The Key doesn't exist")
-
-    if (is_expired(key)):
-        cache.pop(key)
-        return (False, "The Key doesn't exist")
-
-    return (True, cache[key][0])
-
-
-def update_cache_item(key, value, ttl_sec):
-    global cache
-
-    try:
-        ttl = int(ttl_sec)
-    except ValueError: 
-        return (False, "TTL should be a positive natural number")
+    def delete(self, key):
+        if key not in self.cache or self._is_expired(key):
+            return(False, self.ERROR_KEY_NOT_EXIST)
+        
+        self.cache.pop(key)
+        return (True, "Key deleted")
     
-    if ttl <= 0:
-        return(False, "TTL should be a positive natural number")
 
-    if key not in cache:
-        return(False, "The Key doesn't exist")
+    def print(self):
+        print(f"\n\tIn Memory Cache\n")
+        for key in list(self.cache.keys()):
+            if self._is_expired(key):
+                self.cache.pop(key)
+                continue
+
+            print(f"\t\t{key} : {self.cache[key][0]} : {self.cache[key][2]}\n")
+
+        print(f"\tEND\n")
+
+
+    def cleanup(self):
+        expired_keys = set()
+
+        for key in self.cache:
+            if self._is_expired(key):
+                expired_keys.add(key)
+
+        for key in expired_keys:
+            self.cache.pop(key)
+
+        return (True, f"Cleaned up {len(expired_keys)} expired keys")
     
-    cache[key] = (value, datetime.now()+timedelta(seconds=ttl), ttl_sec)
-    return (1, "Key and Value successfully updated in cache")
-
-
-def del_cache_item(key):
-    global cache
-
-    if key not in cache:
-        return(False, "Key is not present in cache")
+    def size(self):
+        return len(self.cache)
     
-    if (is_expired(key)):
-        cache.pop(key)
-        return (False, "The Key doesn't exist") 
-    
-    cache.pop(key)
-    return (True, "Key successfully deleted from the cache")
-
-
-def print_cache_items():
-    global cache
-    expired_keys = set()
-
-    print(f"In Memory Cache\n")
-    for key in cache:
-        if is_expired(key):
-            expired_keys.add(key)
-            continue
-
-        print(f"\t{key} : {cache[key][0]} : {cache[key][2]}\n")
-
-    print(f"END\n")
-
-    for key in expired_keys:
-        cache.pop(key)
 
 
 if __name__ == "__main__":
-    cache_status = add_cache_item("name", "Alice", 5)
-    print(cache_status)
-    print_cache_items()
-    cache_status = get_cache_item("name")
-    print(cache_status)
-    cache_status = update_cache_item("name", "Bob", 10)
-    print(cache_status)
-    print_cache_items()
-    cache_status = del_cache_item("name")
-    print(cache_status)
-    print_cache_items()    
-    cache_status = get_cache_item("name")
-    print(cache_status)
-    cache_status = add_cache_item("age", "30", 3)
-    print(cache_status)
-    print_cache_items()
+
+    my_cache = InMemoryCache()
+    status = my_cache.add("city", "New York", 5)
+    print(status)
+    status = my_cache.size()
+    print(f"Cache Size: {status}")
+    my_cache.print()
+    status = my_cache.get("city")
+    print(status)
+    status = my_cache.update("city", "Los Angeles", 10)
+    print(status)
+    my_cache.print()
+    status = my_cache.delete("city")
+    print(status)
+    status = my_cache.size()
+    print(f"Cache Size: {status}")
+    my_cache.print()
+    status = my_cache.get("city")
+    print(status)
+    status = my_cache.add("country", "USA", 3)
+    print(status)
+    my_cache.print()
     import time
     time.sleep(4)
-    print_cache_items()
-    cache_status = get_cache_item("age")
-    print(cache_status)
+    status = my_cache.cleanup()
+    print(status)
+    my_cache.print()
+    status = my_cache.get("country")
+    print(status)
+
+
