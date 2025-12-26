@@ -7,15 +7,17 @@
     [-] Convert the code into a class-based structure for better organization
     [-] Implement a method to get the current size of the cache
     [-] Implement a method to cleanup the expired entries in the cache
-    [] Background cleanup to handle expired items automatically.
-    [] Implement LRU (Least Recently Used) eviction for cache size management.
+    [-] Background cleanup to handle expired items automatically.
+    [-] Implement LRU (Least Recently Used) eviction for cache size management.
     [] Make the cache persistent to survive application restarts.
-    [] Ensure thread safety for concurrent access.
+    [-] Ensure thread safety for concurrent access.
     [] Enhance expiry strategies to allow more flexibility.
 """
 
+import time
 from datetime import datetime, timedelta 
 from collections import OrderedDict
+import threading
 
 class InMemoryCache:
 
@@ -23,11 +25,17 @@ class InMemoryCache:
     ERROR_TTL_INVALID = "TTL must be a positive natural number"
     ERROR_KEY_NOT_EXIST = "Key doesn't exist or is expired"
     ERROR_KEY_EXISTS = "A valid Key already exists"
+    CLEANUP_INTERVAL_SEC = 2
     MAX_CACHE_SIZE = 3
 
 
     def __init__(self):
         self.cache = OrderedDict()    # {"key" : ("value", "expiration_time (now + timedelta(ttl_sec))", "TTL")}
+        self._lock = threading.RLock()
+
+        # Start background cleanup thread (deamon=True to make sure it exits with main program)
+        self.cleanup_thread = threading.Thread(target=self._background_cleanup, daemon=True)
+        self.cleanup_thread.start()
 
 
     def _is_expired(self, key):
@@ -35,120 +43,130 @@ class InMemoryCache:
     
 
     def _remove_expired_or_lru_entries(self):
-        if self.size() >= self.MAX_CACHE_SIZE:
-            self.cleanup()
-        
-        # Remove LRU item if the cache is still full after cleanup
-        if self.size() >= self.MAX_CACHE_SIZE:
+        self.cleanup()
+
+        while self.size() >= self.MAX_CACHE_SIZE:
             self.cache.popitem(last=False)
 
         return(True, "Cache cleanup done")
 
 
     def add(self, key, value, ttl_sec):
-        try:
-            ttl = int(ttl_sec)
-        except ValueError: 
-            return (False, self.ERROR_TTL_INVALID)
-        
-        if ttl <= 0:
-            return(False, self.ERROR_TTL_INVALID)
-        
-        if (key in self.cache):
-            # Key expiry check
-            if (not self._is_expired(key)):
-                return (False, self.ERROR_KEY_EXISTS)
+        with self._lock:
+            try:
+                ttl = int(ttl_sec)
+            except ValueError: 
+                return (False, self.ERROR_TTL_INVALID)
+            
+            if ttl <= 0:
+                return(False, self.ERROR_TTL_INVALID)
+            
+            if (key in self.cache):
+                # Key expiry check
+                if (not self._is_expired(key)):
+                    return (False, self.ERROR_KEY_EXISTS)
 
-        
-        if self.size() >= self.MAX_CACHE_SIZE:
-            self._remove_expired_or_lru_entries()
+            
+            if self.size() >= self.MAX_CACHE_SIZE:
+                self._remove_expired_or_lru_entries()
 
-        # Add a new cache entry as no valid key exists
-        self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
-        self.cache.move_to_end(key)
-        return (True, "Key added")
+            # Add a new cache entry as no valid key exists
+            self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
+            self.cache.move_to_end(key)
+            return (True, "Key added")
     
 
     def update(self, key, value, ttl_sec):
-        try:
-            ttl = int(ttl_sec)
-        except ValueError: 
-            return (False, self.ERROR_TTL_INVALID)
-        
-        if ttl <= 0:
-            return(False, self.ERROR_TTL_INVALID)
+        with self._lock:
+            try:
+                ttl = int(ttl_sec)
+            except ValueError: 
+                return (False, self.ERROR_TTL_INVALID)
+            
+            if ttl <= 0:
+                return(False, self.ERROR_TTL_INVALID)
 
-        if key not in self.cache:
-            return(False, self.ERROR_KEY_NOT_EXIST)
+            if key not in self.cache:
+                return(False, self.ERROR_KEY_NOT_EXIST)
 
-        self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
-        self.cache.move_to_end(key)
-        return (True, "Key updated")
+            self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
+            self.cache.move_to_end(key)
+            return (True, "Key updated")
 
 
     def get(self, key):
-        if key not in self.cache:
-            return (False, self.ERROR_KEY_NOT_EXIST)
+        with self._lock:
+            if key not in self.cache:
+                return (False, self.ERROR_KEY_NOT_EXIST)
 
-        if (self._is_expired(key)):
-            self.cache.pop(key)
-            return (False, self.ERROR_KEY_NOT_EXIST)
-        self.cache.move_to_end(key)
-        return (True, self.cache[key][0])
+            if (self._is_expired(key)):
+                self.cache.pop(key)
+                return (False, self.ERROR_KEY_NOT_EXIST)
+            self.cache.move_to_end(key)
+            return (True, self.cache[key][0])
     
 
     def delete(self, key):
-        if key not in self.cache or self._is_expired(key):
-            return(False, self.ERROR_KEY_NOT_EXIST)
-        
-        self.cache.pop(key)
-        return (True, "Key deleted")
+        with self._lock:
+            if key not in self.cache or self._is_expired(key):
+                return(False, self.ERROR_KEY_NOT_EXIST)
+            
+            self.cache.pop(key)
+            return (True, "Key deleted")
     
 
     def print(self):
-        print(f"\n\tIn Memory Cache\n")
-        for key in list(self.cache.keys()):
-            if self._is_expired(key):
-                self.cache.pop(key)
-                continue
+        with self._lock:
+            print(f"\n\tIn Memory Cache\n")
+            for key in list(self.cache.keys()):
+                if self._is_expired(key):
+                    self.cache.pop(key)
+                    continue
 
-            print(f"\t\t{key} : {self.cache[key][0]} : {self.cache[key][2]}\n")
+                print(f"\t\t{key} : {self.cache[key][0]} : {self.cache[key][2]}\n")
 
-        print(f"\tEND\n")
+            print(f"\tEND\n")
+
+
+    def size(self):
+        with self._lock:
+            return len(self.cache)
 
 
     def cleanup(self):
-        expired_keys = set()
+        with self._lock:
+            expired_keys = set()
 
-        for key in self.cache:
-            if self._is_expired(key):
-                expired_keys.add(key)
+            for key in self.cache:
+                if self._is_expired(key):
+                    expired_keys.add(key)
 
-        for key in expired_keys:
-            self.cache.pop(key)
+            for key in expired_keys:
+                self.cache.pop(key)
 
-        return (True, f"Cleaned up {len(expired_keys)} expired keys")
+            return (True, f"Cleaned up {len(expired_keys)} expired keys")
     
-    def size(self):
-        return len(self.cache)
     
+    def _background_cleanup(self):
+        """Background task that runs periodically to remove expired items."""
+        while True:
+            time.sleep(self.CLEANUP_INTERVAL_SEC)
+            self.cleanup()
 
+
+    
 
 if __name__ == "__main__":
 
     my_cache = InMemoryCache()
     status = my_cache.add("city1", "Delhi", 5)
     print(status)
-
     status = my_cache.add("city2", "Mumbai", 5)
     print(status)
-
     status = my_cache.add("city3", "Pune", 5)
     print(status)
-
     status = my_cache.add("city4", "Kolkata", 5)
     print(status)
-
     status = my_cache.size()
     print(f"Cache Size: {status}")
     my_cache.print()
