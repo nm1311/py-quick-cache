@@ -7,9 +7,15 @@
     [-] Convert the code into a class-based structure for better organization
     [-] Implement a method to get the current size of the cache
     [-] Implement a method to cleanup the expired entries in the cache
+    [] Background cleanup to handle expired items automatically.
+    [] Implement LRU (Least Recently Used) eviction for cache size management.
+    [] Make the cache persistent to survive application restarts.
+    [] Ensure thread safety for concurrent access.
+    [] Enhance expiry strategies to allow more flexibility.
 """
 
 from datetime import datetime, timedelta 
+from collections import OrderedDict
 
 class InMemoryCache:
 
@@ -17,17 +23,27 @@ class InMemoryCache:
     ERROR_TTL_INVALID = "TTL must be a positive natural number"
     ERROR_KEY_NOT_EXIST = "Key doesn't exist or is expired"
     ERROR_KEY_EXISTS = "A valid Key already exists"
+    MAX_CACHE_SIZE = 3
 
 
     def __init__(self):
-        self.cache = {
-            # "key" : ("value", "expiration_time (now + timedelta(ttl_sec))", "TTL"),
-        }
+        self.cache = OrderedDict()    # {"key" : ("value", "expiration_time (now + timedelta(ttl_sec))", "TTL")}
 
 
     def _is_expired(self, key):
         return key in self.cache and datetime.now() > self.cache[key][1]
     
+
+    def _remove_expired_or_lru_entries(self):
+        if self.size() >= self.MAX_CACHE_SIZE:
+            self.cleanup()
+        
+        # Remove LRU item if the cache is still full after cleanup
+        if self.size() >= self.MAX_CACHE_SIZE:
+            self.cache.popitem(last=False)
+
+        return(True, "Cache cleanup done")
+
 
     def add(self, key, value, ttl_sec):
         try:
@@ -43,8 +59,13 @@ class InMemoryCache:
             if (not self._is_expired(key)):
                 return (False, self.ERROR_KEY_EXISTS)
 
+        
+        if self.size() >= self.MAX_CACHE_SIZE:
+            self._remove_expired_or_lru_entries()
+
         # Add a new cache entry as no valid key exists
         self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
+        self.cache.move_to_end(key)
         return (True, "Key added")
     
 
@@ -61,6 +82,7 @@ class InMemoryCache:
             return(False, self.ERROR_KEY_NOT_EXIST)
 
         self.cache[key] = (value, datetime.now() + timedelta(seconds=ttl), ttl_sec)
+        self.cache.move_to_end(key)
         return (True, "Key updated")
 
 
@@ -71,6 +93,7 @@ class InMemoryCache:
         if (self._is_expired(key)):
             self.cache.pop(key)
             return (False, self.ERROR_KEY_NOT_EXIST)
+        self.cache.move_to_end(key)
         return (True, self.cache[key][0])
     
 
@@ -114,8 +137,18 @@ class InMemoryCache:
 if __name__ == "__main__":
 
     my_cache = InMemoryCache()
-    status = my_cache.add("city", "New York", 5)
+    status = my_cache.add("city1", "Delhi", 5)
     print(status)
+
+    status = my_cache.add("city2", "Mumbai", 5)
+    print(status)
+
+    status = my_cache.add("city3", "Pune", 5)
+    print(status)
+
+    status = my_cache.add("city4", "Kolkata", 5)
+    print(status)
+
     status = my_cache.size()
     print(f"Cache Size: {status}")
     my_cache.print()
