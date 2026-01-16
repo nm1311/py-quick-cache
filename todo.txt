@@ -18,10 +18,10 @@
 [-] Implement a system to track the metrics 
 [-] Convert the calculated metrics to properties and add them in snapshot
 [-] Create a defaults or config file for the cache
+[-] Bulk operation functions, set() function for upsurt
 [] Save the metrics snapshot to a json file on disk everytime cleanup() function is called
 [] Make JSON Serializer and also a asdict function for cache entry
 [] Save metrics to file functions
-[] Mass functions
 [] Add Logging
 [] Take care of zombie threads on application exit.
 [] Add Custom exceptions

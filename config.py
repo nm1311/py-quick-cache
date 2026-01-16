@@ -12,4 +12,4 @@ class CacheConfig:
 
     eviction_policy: str = "lru"
     serializer: str = "pickle"
-    enable_metrics: bool = False
+    enable_metrics: bool = True

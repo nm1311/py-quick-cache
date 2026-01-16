@@ -36,17 +36,20 @@ class InMemoryCache:
     """
 
     # Class-level constants
-    ERROR_TTL_INVALID = "TTL must be a positive natural number"
-    ERROR_KEY_NOT_EXIST = "Key doesn't exist or is expired"
-    ERROR_KEY_EXISTS = "A valid Key already exists"
-    ERROR_FILE_SAVE = "An error occured while saving the file"
-    ERROR_FILE_LOAD = "An error occured while loading the file"
-    SUCCESS_FILE_SAVE = "File saved successfully"
-    SUCCESS_FILE_LOAD = "File loaded successfully"
-    SUCCESS_KEY_ADD = "Key added successfully"
-    SUCCESS_KEY_UPDATE = "Key updated successfully"
-    SUCCESS_KEY_DELETE = "Key deleted successfully"
-    SUCCESS_EVICTION = "Cache capacity enforced. Items evicted to make room."
+    ERROR_TTL_INVALID_MSG = "TTL must be a positive natural number"
+    ERROR_KEY_NOT_EXIST_MSG = "Key doesn't exist or is expired"
+    ERROR_KEY_EXISTS_MSG = "A valid Key already exists"
+    ERROR_FILE_SAVE_MSG = "An error occured while saving the file"
+    ERROR_FILE_LOAD_MSG = "An error occured while loading the file"
+    SUCCESS_FILE_SAVE_MSG = "File saved successfully"
+    SUCCESS_FILE_LOAD_MSG = "File loaded successfully"
+    SUCCESS_KEY_ADD_MSG = "Key added successfully"
+    SUCCESS_KEY_SET_MSG = "Key set successfully"
+    SUCCESS_KEY_SET_MANY_MSG = "Successfully synchronized multiple keys to cache."
+    SUCCESS_KEY_UPDATE_MSG = "Key updated successfully"
+    SUCCESS_KEY_DELETE_MSG = "Key deleted successfully"
+    SUCCESS_EVICTION_MSG = "Cache capacity enforced. Items evicted to make room"
+    CACHE_CLEAR_MSG = "Cache cleared successfully"
 
     def __init__(
         self,
@@ -77,6 +80,17 @@ class InMemoryCache:
             target=self._background_cleanup, daemon=True
         )
         self.cleanup_thread.start()
+
+    def _is_ttl_valid(self, ttl: int) -> bool:
+        try:
+            ttl = int(ttl)
+        except ValueError:
+            return False
+
+        if ttl <= 0:
+            return False
+
+        return True
 
     def _check_key_validity_and_remove_expired(self, key: str) -> bool:
         """
@@ -147,7 +161,7 @@ class InMemoryCache:
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys(self.size())
 
-        return (True, self.SUCCESS_EVICTION)
+        return (True, self.SUCCESS_EVICTION_MSG)
 
     def add(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
         with self._lock:
@@ -155,13 +169,8 @@ class InMemoryCache:
             if not ttl_sec:
                 ttl = self.config.default_ttl
             else:
-                try:
+                if self._is_ttl_valid(ttl_sec):
                     ttl = int(ttl_sec)
-                except ValueError:
-                    return CacheResponse(False, self.ERROR_TTL_INVALID)
-
-                if ttl <= 0:
-                    return CacheResponse(False, self.ERROR_TTL_INVALID)
 
             if key in self.cache:
 
@@ -172,7 +181,7 @@ class InMemoryCache:
                     # Record a failed set operation.
                     self.metrics.record_failed_op()
 
-                    return CacheResponse(False, self.ERROR_KEY_EXISTS)
+                    return CacheResponse(False, self.ERROR_KEY_EXISTS_MSG)
 
             if self.size() >= self.max_cache_size:
                 self._ensure_capacity()
@@ -193,25 +202,21 @@ class InMemoryCache:
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_update(self.cache, key)
 
-            return CacheResponse(True, self.SUCCESS_KEY_ADD)
+            return CacheResponse(True, self.SUCCESS_KEY_ADD_MSG)
 
     def update(self, key: str, value: Any, ttl_sec: int) -> CacheResponse:
         with self._lock:
-            try:
-                ttl = int(ttl_sec)
-            except ValueError:
-                return CacheResponse(False, self.ERROR_TTL_INVALID)
 
-            if ttl <= 0:
-                return CacheResponse(False, self.ERROR_TTL_INVALID)
+            if self._is_ttl_valid(ttl_sec):
+                ttl = int(ttl_sec)
 
             if key not in self.cache:
                 self.metrics.record_failed_op()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST)
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             if self._check_key_validity_and_remove_expired(key) is False:
                 self.metrics.record_failed_op()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST)
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             self.cache[key] = CacheEntry(
                 value=value,
@@ -228,7 +233,7 @@ class InMemoryCache:
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys_by_delta(delta=0)
 
-            return CacheResponse(True, self.SUCCESS_KEY_UPDATE)
+            return CacheResponse(True, self.SUCCESS_KEY_UPDATE_MSG)
 
     def get(self, key: str) -> CacheResponse:
         self.metrics.record_get()
@@ -237,11 +242,11 @@ class InMemoryCache:
 
             if key not in self.cache:
                 self.metrics.record_miss()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST)
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             if self._check_key_validity_and_remove_expired(key) is False:
                 self.metrics.record_miss()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST)
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_access(self.cache, key)
@@ -252,10 +257,10 @@ class InMemoryCache:
     def delete(self, key: str) -> CacheResponse:
         with self._lock:
             if key not in self.cache:
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST)
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             if self._check_key_validity_and_remove_expired(key) is False:
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST)
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             self.cache.pop(key)
 
@@ -265,7 +270,67 @@ class InMemoryCache:
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys_by_delta(delta=-1)
 
-            return CacheResponse(True, self.SUCCESS_KEY_DELETE)
+            return CacheResponse(True, self.SUCCESS_KEY_DELETE_MSG)
+
+    def _internal_set_old(self, key: str, value: Any, ttl: int):
+        """This functions actually sets the key and value."""
+
+        # Handle capacity/eviction if key is brand new
+        if key not in self.cache:
+            if len(self.cache) >= self.config.max_size:
+                evict_key = self.eviction_policy.select_eviction_key(self.cache)
+                self.cache.pop(evict_key)
+                # Record eviction
+                self.metrics.record_eviction()
+
+        # Create the entry
+        expiration = datetime.now() + timedelta(seconds=ttl)
+        self.cache[key] = CacheEntry(value=value, expiration_time=expiration, ttl=ttl)
+
+        # HOOK FO EVICTION POLICY
+        self.eviction_policy.on_update(self.cache, key)
+        # Record the metrics
+        self.metrics.record_set()
+        self.metrics.update_total_keys(len(self.cache))
+
+    def _internal_set(self, key, value, ttl):
+        # Determine the status BEFORE overwriting
+        is_new = key not in self.cache
+        is_ghost = (not is_new) and (
+            not self._check_key_validity_and_remove_expired(key=key)
+        )
+
+        # Perform the actual work
+        # (Eviction logic goes here if is_new is True)
+
+        expiration = datetime.now() + timedelta(seconds=ttl)
+        self.cache[key] = CacheEntry(value=value, expiration_time=expiration, ttl=ttl)
+
+        # HOOK FO EVICTION POLICY
+        self.eviction_policy.on_update(self.cache, key)
+
+        # RECORD METRICS
+        self.metrics.record_set()
+
+        if is_new:
+            self.metrics.update_total_keys(len(self.cache))
+            self.metrics.update_valid_keys_by_delta(1)
+        elif is_ghost:
+            self.metrics.update_valid_keys_by_delta(1)  # Valid count goes up
+        else:
+            # It was a valid update - sizes don't change!
+            pass
+
+    def set(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
+        """This function works as Upsert."""
+        if self._is_ttl_valid(ttl=ttl_sec):
+            ttl = int(ttl)
+        else:
+            ttl = self.config.default_ttl
+
+        with self._lock:
+            self._internal_set(key, value, ttl)
+            return CacheResponse(success=True, message=self.SUCCESS_KEY_SET_MSG)
 
     def print(self):
         with self._lock:
@@ -300,9 +365,9 @@ class InMemoryCache:
             self.cache_file_manager.write(path=file_path, data=serialized_data)
         except Exception as e:
             print(e)
-            return CacheResponse(success=False, message=self.ERROR_FILE_SAVE)
+            return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
 
-        return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE)
+        return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
 
     def load_from_disk(self, filepath: str = None):
         try:
@@ -323,10 +388,10 @@ class InMemoryCache:
             print(e)
             return CacheResponse(
                 success=False,
-                message=f"{self.ERROR_FILE_LOAD} : {str(e)}",
+                message=f"{self.ERROR_FILE_LOAD_MSG} : {str(e)}",
             )
 
-        return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD)
+        return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
 
     def _background_cleanup(self) -> None:
         """Background task that runs periodically to remove expired items."""
@@ -337,3 +402,57 @@ class InMemoryCache:
     def get_metrics_snapshot(self):
         with self._lock:
             return self.metrics.snapshot()
+
+    def clear(self) -> CacheResponse:
+        """Wipes all data and resets metrics."""
+        with self._lock:
+            self.cache.clear()
+            # Reset the dynamic metric counters
+            self.metrics.update_total_keys(0)
+            self.metrics.update_valid_keys(0)
+            return CacheResponse(success=True, message=self.CACHE_CLEAR_MSG)
+
+    def set_many(self, data: dict[str, Any], ttl_sec: int = None) -> CacheResponse:
+        """Bulk operation using 'Set' (Upsert) logic."""
+        if self._is_ttl_valid(ttl=ttl_sec):
+            ttl = int(ttl_sec)
+        else:
+            ttl = self.config.default_ttl
+
+        with self._lock:
+            for key, value in data.items():
+                # We use the internal method that doesn't care about ghosts or existing keys
+                self._internal_set(key, value, ttl)
+
+        return CacheResponse(
+            success=True,
+            message=f"{self.SUCCESS_KEY_SET_MANY_MSG} : TOTAL SET: {len(data)}",
+        )
+
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
+        results = {}
+
+        with self._lock:
+            # Record the overall bulk operation
+            self.metrics.record_get()
+
+            for key in keys:
+                # Case A: Missing Key
+                if key not in self.cache:
+                    self.metrics.record_miss()
+                    continue
+
+                # Case B: Ghost Key (Expired)
+                if not self._check_key_validity_and_remove_expired(key):
+                    # no need to record metrics here, the funciton is alrady doing that
+                    continue
+                else:
+                    # Case C: Valid Hit
+                    self.metrics.record_hit()
+
+                # EVICTION POLICY HOOK
+                self.eviction_policy.on_access(self.cache, key)
+
+                results[key] = self.cache[key].value
+
+        return results
