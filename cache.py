@@ -5,10 +5,11 @@ from collections import OrderedDict
 import threading
 from dataclasses import dataclass
 
-from eviction_policy import EvictionPolicy, LRUEvictionPolicy
-from serializer import BaseSerializer, PickleSerializer
-from storage import FileManager
-from metrics import CacheMetrics
+import default_registries
+from config import CacheConfig
+from registry import create_eviction_policy, create_serializer
+from backend import FileManager
+from metrics import CacheMetrics, NoOpMetrics
 
 
 @dataclass(slots=True)
@@ -42,32 +43,32 @@ class InMemoryCache:
     ERROR_FILE_LOAD = "An error occured while loading the file"
     SUCCESS_FILE_SAVE = "File saved successfully"
     SUCCESS_FILE_LOAD = "File loaded successfully"
-
-    DEFAULT_CACHE_DIR = "cache_storage"
-    DEFAULT_CACHE_FILENAME = "cache"
-
-    DEFAULT_TTL_SEC = 5
-    CLEANUP_INTERVAL_SEC = 2
-    DEFAULT_MAX_CACHE_SIZE = 3
+    SUCCESS_KEY_ADD = "Key added successfully"
+    SUCCESS_KEY_UPDATE = "Key updated successfully"
+    SUCCESS_KEY_DELETE = "Key deleted successfully"
+    SUCCESS_EVICTION = "Cache capacity enforced. Items evicted to make room."
 
     def __init__(
         self,
-        max_cache_size: int = None,
-        eviction_policy: EvictionPolicy = None,
-        serializer: BaseSerializer = None,
+        config: Optional[CacheConfig] = None,
     ) -> None:
 
-        self.eviction_policy = eviction_policy or LRUEvictionPolicy()  # Default
-        self.serializer = serializer or PickleSerializer()  # Default
-        self.metrics = CacheMetrics()
+        # Load default config if no config is provided
+        self.config = config or CacheConfig()
+
+        self.eviction_policy = create_eviction_policy(self.config.eviction_policy)
+        self.serializer = create_serializer(self.config.serializer)
+
+        self.metrics = CacheMetrics() if self.config.enable_metrics else NoOpMetrics()
+
         self.cache_file_manager = FileManager(
-            default_dir=self.DEFAULT_CACHE_DIR,
-            default_filename=self.DEFAULT_CACHE_FILENAME,
+            default_dir=self.config.storage_dir,
+            default_filename=self.config.filename,
         )
 
         # In memory Cache
         self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
-        self.max_cache_size = max_cache_size or self.DEFAULT_MAX_CACHE_SIZE
+        self.max_cache_size = self.config.max_size
 
         # Start background cleanup thread (deamon=True to make sure it exits with main program)
         self._lock: threading.RLock = threading.RLock()
@@ -97,8 +98,9 @@ class InMemoryCache:
             # If we don't decrement it there, your current_valid_keys will stay artificially high until the next full cleanup() runs
             self.metrics.record_expired_removal()
             self.metrics.update_total_keys(len(self.cache))
-            new_valid_count = max(0, self.metrics.get_current_valid_keys() - 1)
-            self.metrics.update_valid_keys(new_valid_count)
+            self.metrics.update_valid_keys_by_delta(
+                delta=-1
+            )  # decrease valid keys by 1
 
             return False
 
@@ -145,13 +147,13 @@ class InMemoryCache:
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys(self.size())
 
-        return (True, "Cache capacity enforced. Items evicted to make room.")
+        return (True, self.SUCCESS_EVICTION)
 
     def add(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
         with self._lock:
 
             if not ttl_sec:
-                ttl = self.DEFAULT_TTL_SEC
+                ttl = self.config.default_ttl
             else:
                 try:
                     ttl = int(ttl_sec)
@@ -186,12 +188,12 @@ class InMemoryCache:
             # Record a successful set operation and update the total keys as well as valid keys since we know one more valid key is added
             self.metrics.record_set()
             self.metrics.update_total_keys(self.size())
-            self.metrics.update_valid_keys(self.metrics.get_current_valid_keys() + 1)
+            self.metrics.update_valid_keys_by_delta(delta=1)
 
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_update(self.cache, key)
 
-            return CacheResponse(True, "Key added")
+            return CacheResponse(True, self.SUCCESS_KEY_ADD)
 
     def update(self, key: str, value: Any, ttl_sec: int) -> CacheResponse:
         with self._lock:
@@ -224,9 +226,9 @@ class InMemoryCache:
             # Record a successful set and update the total and valid keys
             self.metrics.record_set()
             self.metrics.update_total_keys(self.size())
-            self.metrics.update_valid_keys(self.metrics.get_current_valid_keys())
+            self.metrics.update_valid_keys_by_delta(delta=0)
 
-            return CacheResponse(True, "Key updated")
+            return CacheResponse(True, self.SUCCESS_KEY_UPDATE)
 
     def get(self, key: str) -> CacheResponse:
         self.metrics.record_get()
@@ -261,9 +263,9 @@ class InMemoryCache:
             # Record manual deletion, and update the total and valid keys accordingly
             self.metrics.record_manual_deletion()
             self.metrics.update_total_keys(self.size())
-            self.metrics.update_valid_keys(self.metrics.get_current_valid_keys() - 1)
+            self.metrics.update_valid_keys_by_delta(delta=-1)
 
-            return CacheResponse(True, "Key deleted")
+            return CacheResponse(True, self.SUCCESS_KEY_DELETE)
 
     def print(self):
         with self._lock:
@@ -321,15 +323,15 @@ class InMemoryCache:
             print(e)
             return CacheResponse(
                 success=False,
-                message=f"An error occured while loading the file : {str(e)}",
+                message=f"{self.ERROR_FILE_LOAD} : {str(e)}",
             )
 
-        return CacheResponse(success=True, message="File loaded successfully")
+        return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD)
 
     def _background_cleanup(self) -> None:
         """Background task that runs periodically to remove expired items."""
         while True:
-            time.sleep(self.CLEANUP_INTERVAL_SEC)
+            time.sleep(self.config.cleanup_interval)
             self.cleanup()
 
     def get_metrics_snapshot(self):

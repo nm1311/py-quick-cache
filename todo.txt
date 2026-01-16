@@ -16,6 +16,13 @@
 [-] Make the cache persistent to survive application restarts.
 [-] Implement pluggable serialization formats (e.g., JSON, Pickle).
 [-] Implement a system to track the metrics 
+[-] Convert the calculated metrics to properties and add them in snapshot
+[-] Create a defaults or config file for the cache
 [] Save the metrics snapshot to a json file on disk everytime cleanup() function is called
+[] Make JSON Serializer and also a asdict function for cache entry
+[] Save metrics to file functions
+[] Mass functions
+[] Add Logging
 [] Take care of zombie threads on application exit.
+[] Add Custom exceptions
 """

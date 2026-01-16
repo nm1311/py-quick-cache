@@ -1,9 +1,14 @@
 from abc import ABC, abstractmethod
 from typing import Any
-import pickle
 
 
 class BaseSerializer(ABC):
+    """
+    The Strategy Interface.
+    Every new serializer (pickle, json, protobuff) must implement these methods.
+
+    Don't forget to register these in defaults.py
+    """
 
     @property
     @abstractmethod
@@ -24,20 +29,3 @@ class BaseSerializer(ABC):
     @abstractmethod
     def deserialize(self, data: str | bytes) -> Any:
         pass
-
-
-class PickleSerializer(BaseSerializer):
-
-    @property
-    def extension(self) -> str:
-        return "pkl"
-
-    @property
-    def is_binary(self) -> bool:
-        return True
-
-    def serialize(self, data: Any) -> str | bytes:
-        return pickle.dumps(data)
-
-    def deserialize(self, data: str | bytes) -> Any:
-        return pickle.loads(data)
