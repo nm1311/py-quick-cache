@@ -13,3 +13,5 @@ dist/
 .vscode/
 .DS_Store
 cache_data/
+cache_metrics/
+cache_storage/

@@ -5,9 +5,9 @@ from collections import OrderedDict
 import threading
 from dataclasses import dataclass
 
-import default_registries
+import registry.default_registries as default_registries
 from config import CacheConfig
-from registry import create_eviction_policy, create_serializer
+from registry.registry import create_eviction_policy, create_serializer
 from backend import FileManager
 from metrics import CacheMetrics, NoOpMetrics
 
@@ -17,6 +17,25 @@ class CacheEntry:
     value: Any
     expiration_time: datetime
     ttl: int
+
+    def to_dict(self) -> dict:
+        """Converts the entry into a JSON-serializable dictionary."""
+        return {
+            "value": self.value,
+            "expiration_time": self.expiration_time.isoformat(),  # Handle datetime conversion here
+            "ttl": self.ttl,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CacheEntry":
+        """Reconstructs a CacheEntry from a dictionary."""
+        return cls(
+            value=data["value"],
+            expiration_time=datetime.fromisoformat(
+                data["expiration_time"]
+            ),  # Revert string to datetime
+            ttl=data["ttl"],
+        )
 
     def is_expired(self) -> bool:
         """Returns true if expired"""
@@ -48,6 +67,7 @@ class InMemoryCache:
     SUCCESS_KEY_SET_MANY_MSG = "Successfully synchronized multiple keys to cache."
     SUCCESS_KEY_UPDATE_MSG = "Key updated successfully"
     SUCCESS_KEY_DELETE_MSG = "Key deleted successfully"
+    SUCCESS_KEY_DELETE_MANY_MSG = "Deleted multiple keys successfully"
     SUCCESS_EVICTION_MSG = "Cache capacity enforced. Items evicted to make room"
     CACHE_CLEAR_MSG = "Cache cleared successfully"
 
@@ -63,16 +83,24 @@ class InMemoryCache:
         self.serializer = create_serializer(self.config.serializer)
 
         self.metrics = CacheMetrics() if self.config.enable_metrics else NoOpMetrics()
+        self.metrics_serializer = create_serializer(self.config.metrics_serializer)
 
         self.cache_file_manager = FileManager(
             default_dir=self.config.storage_dir,
             default_filename=self.config.filename,
         )
 
+        self.cache_metrics_file_manager = FileManager(
+            default_dir=self.config.metrics_storage_dir,
+            default_filename=self.config.metrics_filename,
+        )
+
         # In memory Cache
         self.cache: OrderedDict[str, CacheEntry] = OrderedDict()
         self.max_cache_size = self.config.max_size
 
+        # The stop signal
+        self._stop_event = threading.Event()
         # Start background cleanup thread (deamon=True to make sure it exits with main program)
         self._lock: threading.RLock = threading.RLock()
         # self._stop_event = threading.Event() # The "Stop Signal" in case our main program wants to exit
@@ -82,6 +110,9 @@ class InMemoryCache:
         self.cleanup_thread.start()
 
     def _is_ttl_valid(self, ttl: int) -> bool:
+        if not ttl:
+            return False
+
         try:
             ttl = int(ttl)
         except ValueError:
@@ -151,15 +182,18 @@ class InMemoryCache:
     def _ensure_capacity(self) -> tuple[bool, str]:
         self.cleanup()
 
+        eviction_happened = False
+
         while self.size() >= self.max_cache_size:
             evicted_key = self.eviction_policy.select_eviction_key(self.cache)
             self.cache.pop(evicted_key)
-
-            # SYNC THE METRICS
-            # We will record the eviction and update the total keys and valid keys both since all the keys are valid at this point
             self.metrics.record_eviction()
-            self.metrics.update_total_keys(self.size())
-            self.metrics.update_valid_keys(self.size())
+            eviction_happened = True
+
+        if eviction_happened:
+            new_size = self.size()
+            self.metrics.update_total_keys(new_size)
+            self.metrics.update_valid_keys(new_size)
 
         return (True, self.SUCCESS_EVICTION_MSG)
 
@@ -272,41 +306,18 @@ class InMemoryCache:
 
             return CacheResponse(True, self.SUCCESS_KEY_DELETE_MSG)
 
-    def _internal_set_old(self, key: str, value: Any, ttl: int):
-        """This functions actually sets the key and value."""
-
-        # Handle capacity/eviction if key is brand new
-        if key not in self.cache:
-            if len(self.cache) >= self.config.max_size:
-                evict_key = self.eviction_policy.select_eviction_key(self.cache)
-                self.cache.pop(evict_key)
-                # Record eviction
-                self.metrics.record_eviction()
-
-        # Create the entry
-        expiration = datetime.now() + timedelta(seconds=ttl)
-        self.cache[key] = CacheEntry(value=value, expiration_time=expiration, ttl=ttl)
-
-        # HOOK FO EVICTION POLICY
-        self.eviction_policy.on_update(self.cache, key)
-        # Record the metrics
-        self.metrics.record_set()
-        self.metrics.update_total_keys(len(self.cache))
-
     def _internal_set(self, key, value, ttl):
-        # Determine the status BEFORE overwriting
         is_new = key not in self.cache
-        is_ghost = (not is_new) and (
-            not self._check_key_validity_and_remove_expired(key=key)
-        )
+        is_ghost = (not is_new) and (not self._check_key_validity_and_remove_expired(key=key))
 
-        # Perform the actual work
-        # (Eviction logic goes here if is_new is True)
+        # ENFORCE CAPACITY
+        if (is_new or is_ghost) and self.size() >= self.max_cache_size:
+            self._ensure_capacity()
 
         expiration = datetime.now() + timedelta(seconds=ttl)
         self.cache[key] = CacheEntry(value=value, expiration_time=expiration, ttl=ttl)
 
-        # HOOK FO EVICTION POLICY
+        # HOOK FOR EVICTION POLICY
         self.eviction_policy.on_update(self.cache, key)
 
         # RECORD METRICS
@@ -316,9 +327,13 @@ class InMemoryCache:
             self.metrics.update_total_keys(len(self.cache))
             self.metrics.update_valid_keys_by_delta(1)
         elif is_ghost:
-            self.metrics.update_valid_keys_by_delta(1)  # Valid count goes up
+            # Since the ghost was removed by the helper, total_keys count 
+            # is already updated inside _check_key_validity_and_remove_expired.
+            # We just need to sync the new total and increment valid count.
+            self.metrics.update_total_keys(len(self.cache))
+            self.metrics.update_valid_keys_by_delta(1)
         else:
-            # It was a valid update - sizes don't change!
+            # It was a valid update to an existing key - sizes don't change!
             pass
 
     def set(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
@@ -355,22 +370,33 @@ class InMemoryCache:
         self, filepath: str = None, use_timestamp: bool = False
     ) -> CacheResponse:
 
-        try:
-            file_path = self.cache_file_manager.resolve_path(
-                user_input=filepath,
-                extension=self.serializer.extension,
-                use_timestamp=use_timestamp,
-            )
-            serialized_data = self.serializer.serialize(self.cache)
-            self.cache_file_manager.write(path=file_path, data=serialized_data)
-        except Exception as e:
-            print(e)
-            return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
+        timestamp = (
+            use_timestamp if use_timestamp is not None else self.config.cache_timestamps
+        )
 
-        return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
+        with self._lock:
+            if not self.serializer.is_binary:
+                data_to_serialize = {k: v.to_dict() for k, v in self.cache.items()}
+            else:
+                data_to_serialize = self.cache
+
+            try:
+                file_path = self.cache_file_manager.resolve_path(
+                    user_input=filepath,
+                    extension=self.serializer.extension,
+                    use_timestamp=timestamp,
+                )
+                serialized_data = self.serializer.serialize(data_to_serialize)
+                self.cache_file_manager.write(path=file_path, data=serialized_data)
+            except Exception as e:
+                print(e)
+                return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
+
+            return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
 
     def load_from_disk(self, filepath: str = None):
         try:
+
             file_path = self.cache_file_manager.resolve_path(
                 user_input=filepath,
                 extension=self.serializer.extension,
@@ -379,10 +405,24 @@ class InMemoryCache:
             serialized_data = self.cache_file_manager.read(
                 path=file_path, binary=self.serializer.is_binary
             )
-            loaded_cache = self.serializer.deserialize(serialized_data)
+
+            loaded_data = self.serializer.deserialize(serialized_data)
 
             with self._lock:
-                self.cache = loaded_cache
+                if not self.serializer.is_binary:
+                    new_cache = OrderedDict()
+                    for k, v in loaded_data.items():
+                        entry = CacheEntry.from_dict(v)
+                        if entry is not None:
+                            new_cache[k] = entry
+                    self.cache = new_cache
+                else:
+                    self.cache = loaded_data
+
+                # Do a cleanup here, it will automatically remove the expired entries and set the metrics
+                self.cleanup()
+
+            return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
 
         except Exception as e:
             print(e)
@@ -391,12 +431,14 @@ class InMemoryCache:
                 message=f"{self.ERROR_FILE_LOAD_MSG} : {str(e)}",
             )
 
-        return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
-
     def _background_cleanup(self) -> None:
         """Background task that runs periodically to remove expired items."""
-        while True:
-            time.sleep(self.config.cleanup_interval)
+        # Loop as long as the stop signal hasn't been set
+        while not self._stop_event.is_set():
+            # Wait for the interval, but wake up instantly if stop_event is set
+            if self._stop_event.wait(timeout=self.config.cleanup_interval):
+                break  # Exit loop if wait returned True (event was set)
+
             self.cleanup()
 
     def get_metrics_snapshot(self):
@@ -456,3 +498,66 @@ class InMemoryCache:
                 results[key] = self.cache[key].value
 
         return results
+
+    def delete_many(self, keys: list[str]) -> CacheResponse:
+        """
+        Deletes multiple keys.
+        Does not error if keys are missing; ensures they are removed.
+        """
+
+        deleted_count = 0
+
+        with self._lock:
+            for key in keys:
+                if self._check_key_validity_and_remove_expired(key=key) is True:
+                    self.cache.pop(key=key)
+                    deleted_count = deleted_count + 1
+
+                    # Record metrics
+                    self.metrics.record_manual_deletion()
+                    self.metrics.update_valid_keys_by_delta(-1)
+
+                else:
+                    continue
+
+            # Record metrics: update the total count
+            self.metrics.update_total_keys(self.size())
+
+            return CacheResponse(
+                success=True,
+                message=f"{self.SUCCESS_KEY_DELETE_MANY_MSG}. Attempted deletion of {len(keys)} keys. {deleted_count} were actually removed.",
+            )
+
+    def save_metrics_to_disk(
+        self, filepath: str = None, use_timestamp: bool = False
+    ) -> CacheResponse:
+
+        timestamp = (
+            use_timestamp
+            if use_timestamp is not None
+            else self.config.cache_metrics_timestamps
+        )
+
+        try:
+            with self._lock:
+                metrics_data = self.metrics.snapshot()
+
+            file_path = self.cache_metrics_file_manager.resolve_path(
+                user_input=filepath,
+                extension=self.metrics_serializer.extension,
+                use_timestamp=timestamp,
+            )
+            serialized_data = self.metrics_serializer.serialize(metrics_data)
+            self.cache_metrics_file_manager.write(path=file_path, data=serialized_data)
+            return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
+
+        except Exception as e:
+            print(e)
+            return CacheResponse(
+                success=False, message=f"{self.ERROR_FILE_SAVE_MSG} : {str(e)}"
+            )
+
+    def stop(self):
+        """Gracefully stops the background cleanup thread."""
+        self._stop_event.set()  # Trigger the stop signal
+        self.cleanup_thread.join(timeout=2.0)  # Wait for it to finish

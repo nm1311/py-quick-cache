@@ -1,4 +1,5 @@
-"""Objectives:
+Objectives:
+
 [-] Store key-value pairs in a dictionary
 [-] Implement TTL (Time To Live) functionality for cache entries
 [-] Remove expired entries automatically
@@ -14,15 +15,19 @@
 [-] Enhance expiry strategies to allow more flexibility.
 [-] Make the cache entry and cache response more clear, e.g., using a dataclass or namedtuple.
 [-] Make the cache persistent to survive application restarts.
-[-] Implement pluggable serialization formats (e.g., JSON, Pickle).
+[-] Implement pluggable serialization formats ( e.g., JSON, Pickle).
 [-] Implement a system to track the metrics 
 [-] Convert the calculated metrics to properties and add them in snapshot
 [-] Create a defaults or config file for the cache
 [-] Bulk operation functions, set() function for upsurt
-[] Save the metrics snapshot to a json file on disk everytime cleanup() function is called
-[] Make JSON Serializer and also a asdict function for cache entry
-[] Save metrics to file functions
+[-] Make JSON Serializer 
+[-] Save metrics to file functions
+[-] Make asdict function for cache entry
+[-] Review _internal_set() 
+[-] Take care of zombie threads on application exit.
 [] Add Logging
-[] Take care of zombie threads on application exit.
+
+[] Write test cases 
 [] Add Custom exceptions
-"""
+[] How will the users extend the config file and change only the things they need to change and use the other defaults
+
