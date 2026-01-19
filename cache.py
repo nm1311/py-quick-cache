@@ -308,7 +308,9 @@ class InMemoryCache:
 
     def _internal_set(self, key, value, ttl):
         is_new = key not in self.cache
-        is_ghost = (not is_new) and (not self._check_key_validity_and_remove_expired(key=key))
+        is_ghost = (not is_new) and (
+            not self._check_key_validity_and_remove_expired(key=key)
+        )
 
         # ENFORCE CAPACITY
         if (is_new or is_ghost) and self.size() >= self.max_cache_size:
@@ -327,7 +329,7 @@ class InMemoryCache:
             self.metrics.update_total_keys(len(self.cache))
             self.metrics.update_valid_keys_by_delta(1)
         elif is_ghost:
-            # Since the ghost was removed by the helper, total_keys count 
+            # Since the ghost was removed by the helper, total_keys count
             # is already updated inside _check_key_validity_and_remove_expired.
             # We just need to sync the new total and increment valid count.
             self.metrics.update_total_keys(len(self.cache))
