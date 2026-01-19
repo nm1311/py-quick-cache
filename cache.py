@@ -4,12 +4,19 @@ from datetime import datetime, timedelta
 from collections import OrderedDict
 import threading
 from dataclasses import dataclass
+import atexit
 
 import registry.default_registries as default_registries
 from config import CacheConfig
 from registry.registry import create_eviction_policy, create_serializer
 from backend import FileManager
 from metrics import CacheMetrics, NoOpMetrics
+
+
+import logging
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 @dataclass(slots=True)
@@ -109,6 +116,15 @@ class InMemoryCache:
         )
         self.cleanup_thread.start()
 
+        atexit.register(self.stop)
+
+        logger.info(
+            msg="The cache and metrics have been initialized with the chosen serializers and eviltion policies."
+        )
+
+    def __repr__(self) -> str:
+        return f"<InMemoryCache(size={self.size()}, max_size={self.max_cache_size}, policy='{self.config.eviction_policy}')>"
+
     def _is_ttl_valid(self, ttl: int) -> bool:
         if not ttl:
             return False
@@ -173,6 +189,8 @@ class InMemoryCache:
             self.metrics.update_total_keys(final_count)  # Total Length
             self.metrics.update_valid_keys(final_count)  # Valid Size
 
+            logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
+
             return {
                 "success": True,
                 "items_removed": removed_count,
@@ -180,6 +198,9 @@ class InMemoryCache:
             }
 
     def _ensure_capacity(self) -> tuple[bool, str]:
+        logger.warning(
+            f"Cache capacity ({self.max_cache_size}) reached. Evicting items."
+        )
         self.cleanup()
 
         eviction_happened = False
@@ -227,6 +248,8 @@ class InMemoryCache:
                 ttl=ttl_sec,
             )
 
+            logger.debug(f"Key '{key}' added.")
+
             # SYNC THE METRICS
             # Record a successful set operation and update the total keys as well as valid keys since we know one more valid key is added
             self.metrics.record_set()
@@ -257,6 +280,8 @@ class InMemoryCache:
                 expiration_time=datetime.now() + timedelta(seconds=ttl),
                 ttl=ttl_sec,
             )
+
+            logger.debug(f"Key '{key}' updated.")
 
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_update(self.cache, key)
@@ -297,6 +322,8 @@ class InMemoryCache:
                 return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
             self.cache.pop(key)
+
+            logger.debug(f"Key '{key}' manually deleted.")
 
             # SYNC THE METRICS
             # Record manual deletion, and update the total and valid keys accordingly
@@ -341,12 +368,15 @@ class InMemoryCache:
     def set(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
         """This function works as Upsert."""
         if self._is_ttl_valid(ttl=ttl_sec):
-            ttl = int(ttl)
+            ttl = int(ttl_sec)
         else:
             ttl = self.config.default_ttl
 
         with self._lock:
             self._internal_set(key, value, ttl)
+
+            logger.debug(f"Key '{key}' set.")
+
             return CacheResponse(success=True, message=self.SUCCESS_KEY_SET_MSG)
 
     def print(self):
@@ -391,7 +421,7 @@ class InMemoryCache:
                 serialized_data = self.serializer.serialize(data_to_serialize)
                 self.cache_file_manager.write(path=file_path, data=serialized_data)
             except Exception as e:
-                print(e)
+                logger.error("Failed to save cache to disk.", exc_info=True)
                 return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
 
             return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
@@ -427,7 +457,7 @@ class InMemoryCache:
             return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
 
         except Exception as e:
-            print(e)
+            logger.error("Failed to save cache to disk.", exc_info=True)
             return CacheResponse(
                 success=False,
                 message=f"{self.ERROR_FILE_LOAD_MSG} : {str(e)}",
@@ -436,12 +466,23 @@ class InMemoryCache:
     def _background_cleanup(self) -> None:
         """Background task that runs periodically to remove expired items."""
         # Loop as long as the stop signal hasn't been set
-        while not self._stop_event.is_set():
-            # Wait for the interval, but wake up instantly if stop_event is set
-            if self._stop_event.wait(timeout=self.config.cleanup_interval):
-                break  # Exit loop if wait returned True (event was set)
 
-            self.cleanup()
+        logger.info("Background cleanup thread started.")
+        try:
+            while not self._stop_event.is_set():
+                # Wait for the interval, but wake up instantly if stop_event is set
+                if self._stop_event.wait(timeout=self.config.cleanup_interval):
+                    break  # Exit loop if wait returned True (event was set)
+
+                logger.debug("Periodic cleanup sweep triggered.")
+                self.cleanup()
+        except Exception as e:
+            logger.error(
+                "Background cleanup thread encountered an unhandled error",
+                exc_info=True,
+            )
+        finally:
+            logger.info("Background cleanup thread has shut down.")
 
     def get_metrics_snapshot(self):
         with self._lock:
@@ -554,12 +595,23 @@ class InMemoryCache:
             return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
 
         except Exception as e:
-            print(e)
+            logger.error("Failed to save metrics to disk.", exc_info=True)
             return CacheResponse(
                 success=False, message=f"{self.ERROR_FILE_SAVE_MSG} : {str(e)}"
             )
 
-    def stop(self):
+    def stop(self) -> None:
         """Gracefully stops the background cleanup thread."""
-        self._stop_event.set()  # Trigger the stop signal
-        self.cleanup_thread.join(timeout=2.0)  # Wait for it to finish
+        if not self._stop_event.is_set():
+            logger.info("Stopping InMemoryCache...")
+            self._stop_event.set()
+
+            # Wait up to 2 seconds for the thread to wrap up
+            self.cleanup_thread.join(timeout=2.0)
+
+            if self.cleanup_thread.is_alive():
+                logger.warning(
+                    "Cleanup thread did not exit within timeout and will be terminated by the OS."
+                )
+            else:
+                logger.info("InMemoryCache stopped gracefully.")
