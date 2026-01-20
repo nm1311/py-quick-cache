@@ -12,9 +12,18 @@ from .registry import default_registries
 from .config import QuickCacheConfig
 from .backend import FileManager
 from .metrics import CacheMetrics, NoOpMetrics
-from .exceptions import KeyExpired, KeyNotFound, KeyAlreadyExists, InvalidTTL, CacheLoadError, CacheSaveError, CacheMetricsSaveError
+from .exceptions import (
+    KeyExpired,
+    KeyNotFound,
+    KeyAlreadyExists,
+    InvalidTTL,
+    CacheLoadError,
+    CacheSaveError,
+    CacheMetricsSaveError,
+)
 
 import logging
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -53,6 +62,7 @@ class KeyStatus(Enum):
     MISSING = auto()
     EXPIRED = auto()
     VALID = auto()
+
 
 class QuickCache(BaseCache):
     """
@@ -107,7 +117,7 @@ class QuickCache(BaseCache):
         return f"<QuickCache(size={self.size()}, max_size={self.max_cache_size}, policy='{self.config.eviction_policy}')>"
 
     def get(self, key: str) -> Any:
-        """ Returns the value of a valid key in cache else raise exceptions """
+        """Returns the value of a valid key in cache else raise exceptions"""
 
         self.metrics.record_get()
 
@@ -129,7 +139,7 @@ class QuickCache(BaseCache):
             return self.cache[key].value
 
     def set(self, key: str, value: Any, ttl_sec: int = None) -> None:
-        """ Upsert a key, if no ttl provides, uses the default value """
+        """Upsert a key, if no ttl provides, uses the default value"""
 
         if ttl_sec is None:
             ttl = self.config.default_ttl
@@ -143,9 +153,8 @@ class QuickCache(BaseCache):
 
             logger.debug(f"Key '{key}' set.")
 
-
     def add(self, key: str, value: Any, ttl_sec: int = None) -> None:
-        """ Insert the key only if no valid key exists """
+        """Insert the key only if no valid key exists"""
 
         with self._lock:
 
@@ -155,13 +164,13 @@ class QuickCache(BaseCache):
                 ttl = int(ttl_sec)
             else:
                 raise InvalidTTL(ttl=ttl_sec)
-            
+
             status = self._inspect_key(key=key)
 
             if status is KeyStatus.VALID:
                 self.metrics.record_failed_op()
                 raise KeyAlreadyExists(key=key)
-            
+
             # status is MISSING or EXPIRED → allowed to add
             if self.size() >= self.max_cache_size:
                 self._ensure_capacity()
@@ -184,7 +193,6 @@ class QuickCache(BaseCache):
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_update(self.cache, key)
 
-
     def update(self, key: str, value: Any, ttl_sec: int) -> None:
         """Updates the value of an existing valid key. Raises if key doesn't exist or is expired."""
 
@@ -196,9 +204,9 @@ class QuickCache(BaseCache):
                 ttl = int(ttl_sec)
             else:
                 raise InvalidTTL(ttl=ttl_sec)
-            
+
             status = self._inspect_key(key=key)
-            
+
             if status is KeyStatus.MISSING:
                 self.metrics.record_failed_op()
                 raise KeyNotFound(key=key)
@@ -226,7 +234,7 @@ class QuickCache(BaseCache):
             self.metrics.update_valid_keys_by_delta(delta=0)
 
     def delete(self, key: str) -> None:
-        """ Deletes a key from the cache. Raises if key doesn't exist or is expired """
+        """Deletes a key from the cache. Raises if key doesn't exist or is expired"""
 
         with self._lock:
             status = self._inspect_key(key=key)
@@ -249,7 +257,6 @@ class QuickCache(BaseCache):
             self.metrics.record_manual_deletion()
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys_by_delta(delta=-1)
-
 
     def set_many(self, data: dict[str, Any], ttl_sec: int = None) -> None:
         """
@@ -314,7 +321,7 @@ class QuickCache(BaseCache):
                     # Record metrics
                     self.metrics.record_manual_deletion()
                     self.metrics.update_valid_keys_by_delta(-1)
-                
+
                 else:
                     skipped_keys.append(key)
                     self.metrics.record_miss()
@@ -328,20 +335,20 @@ class QuickCache(BaseCache):
                 )
 
     def size(self) -> int:
-        """ Returns the total size of the cache that includes the expired keys as well """
+        """Returns the total size of the cache that includes the expired keys as well"""
 
         with self._lock:
             return len(self.cache)
 
     def valid_size(self) -> int:
-        """ Returns the total valid keys in the cache, also does a cleanup before calculating"""
+        """Returns the total valid keys in the cache, also does a cleanup before calculating"""
 
         with self._lock:
             self.cleanup()
             return len(self.cache)
 
     def clear(self) -> None:
-        """ Wipes all data from the cache, do not reset metrics and returns None on success """
+        """Wipes all data from the cache, do not reset metrics and returns None on success"""
 
         with self._lock:
             cleared_count = len(self.cache)
@@ -378,7 +385,7 @@ class QuickCache(BaseCache):
             self.metrics.update_total_keys(final_count)  # Total Length
             self.metrics.update_valid_keys(final_count)  # Valid Size
 
-            #logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
+            # logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
 
     def stop(self) -> None:
         """Gracefully stops the background cleanup thread."""
@@ -396,20 +403,15 @@ class QuickCache(BaseCache):
             else:
                 logger.info("InMemoryCache stopped gracefully.")
 
-    def save_to_disk(
-        self, filepath: str = None, use_timestamp: bool = False
-    ) -> None:
+    def save_to_disk(self, filepath: str = None, use_timestamp: bool = False) -> None:
         """
         Saves cache data to disk.
         Raises CacheSaveError on failure.
         """
 
         timestamp = (
-            use_timestamp
-            if use_timestamp is not None
-            else self.config.cache_timestamps
+            use_timestamp if use_timestamp is not None else self.config.cache_timestamps
         )
-
 
         with self._lock:
             if not self.serializer.is_binary:
@@ -427,7 +429,9 @@ class QuickCache(BaseCache):
             self.cache_file_manager.write(path=file_path, data=serialized_data)
 
         except Exception as e:
-            raise CacheSaveError(file_path if "file_path" in locals() else filepath, e) from e
+            raise CacheSaveError(
+                file_path if "file_path" in locals() else filepath, e
+            ) from e
 
     def load_from_disk(self, filepath: str = None) -> None:
         """
@@ -519,9 +523,8 @@ class QuickCache(BaseCache):
         except Exception as e:
             raise CacheMetricsSaveError(filepath or "unknown", e) from e
 
-
     def _is_ttl_valid(self, ttl: int) -> bool:
-        """ Returns True if ttl is present, and is an integer """
+        """Returns True if ttl is present, and is an integer"""
         if not ttl:
             return False
 
@@ -534,7 +537,7 @@ class QuickCache(BaseCache):
             return False
 
         return True
-    
+
     def _inspect_key(self, key: str) -> KeyStatus:
         """
         Inspects key state.
@@ -643,7 +646,6 @@ class QuickCache(BaseCache):
             new_size = self.size()
             self.metrics.update_total_keys(new_size)
             self.metrics.update_valid_keys(new_size)
-
 
     def _background_cleanup(self) -> None:
         """Background task that runs periodically to remove expired items."""

@@ -23,6 +23,7 @@ class KeyExpired(CacheError):
         super().__init__(f"Key '{key}' has expired")
         self.key = key
 
+
 class KeyAlreadyExists(CacheError):
     code = "KEY_ALREADY_EXISTS"
 
