@@ -666,7 +666,7 @@ class QuickCache(BaseCache):
         finally:
             logger.info("Background cleanup thread has shut down.")
 
-    def print(self) -> None:
+    def _debug_print(self) -> None:
         with self._lock:
 
             self.cleanup()
