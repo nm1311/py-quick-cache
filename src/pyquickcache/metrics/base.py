@@ -38,6 +38,10 @@ class BaseMetrics(ABC):
     def record_manual_deletion(self):
         pass
 
+    @abstractmethod
+    def record_manual_deletions(self, count):
+        pass
+
     # ---------- State updates ----------
 
     @abstractmethod

@@ -164,6 +164,9 @@ class CacheMetrics(BaseMetrics):
     def record_manual_deletion(self):
         self._data.manual_deletions += 1
 
+    def record_manual_deletions(self, count):
+        self._data.manual_deletions += count
+
     def update_total_keys(self, length: int):
         self._data.current_total_keys = length
         if self._data.current_total_keys > self._data.peak_total_keys:

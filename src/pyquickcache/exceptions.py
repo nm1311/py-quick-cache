@@ -23,6 +23,13 @@ class KeyExpired(CacheError):
         super().__init__(f"Key '{key}' has expired")
         self.key = key
 
+class KeyAlreadyExists(CacheError):
+    code = "KEY_ALREADY_EXISTS"
+
+    def __init__(self, key: str):
+        super().__init__(f"Key '{key}' already exists")
+        self.key = key
+
 
 class InvalidTTL(CacheError):
     code = "INVALID_TTL"
@@ -30,3 +37,36 @@ class InvalidTTL(CacheError):
     def __init__(self, ttl: int):
         super().__init__(f"Invalid TTL value: {ttl}")
         self.ttl = ttl
+
+
+class CacheSaveError(CacheError):
+    code = "CACHE_SAVE_ERROR"
+
+    def __init__(self, filepath: str, original_exception: Exception | None = None):
+        message = f"Failed to save cache to disk: {filepath}"
+        if original_exception:
+            message += f" | {original_exception}"
+        super().__init__(message)
+        self.filepath = filepath
+        self.original_exception = original_exception
+
+
+class CacheLoadError(CacheError):
+    code = "CACHE_LOAD_ERROR"
+
+    def __init__(self, filepath: str, original_exception: Exception | None = None):
+        message = f"Failed to load cache from disk: {filepath}"
+        if original_exception:
+            message += f" | {original_exception}"
+        super().__init__(message)
+        self.filepath = filepath
+        self.original_exception = original_exception
+
+
+class CacheMetricsSaveError(CacheError):
+    code = "CACHE_METRICS_SAVE_ERROR"
+
+    def __init__(self, filepath: str, cause: Exception | None = None):
+        super().__init__(f"Failed to save cache metrics to disk: {filepath}")
+        self.filepath = filepath
+        self.__cause__ = cause

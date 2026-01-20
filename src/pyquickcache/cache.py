@@ -2,6 +2,7 @@ from typing import Any, Optional
 from datetime import datetime, timedelta
 from collections import OrderedDict
 import threading
+from enum import Enum, auto
 from dataclasses import dataclass
 import atexit
 
@@ -11,7 +12,7 @@ from .registry import default_registries
 from .config import QuickCacheConfig
 from .backend import FileManager
 from .metrics import CacheMetrics, NoOpMetrics
-from .exceptions import KeyExpired, KeyNotFound, InvalidTTL
+from .exceptions import KeyExpired, KeyNotFound, KeyAlreadyExists, InvalidTTL, CacheLoadError, CacheSaveError, CacheMetricsSaveError
 from .service import CacheResponse
 
 import logging
@@ -50,6 +51,11 @@ class CacheEntry:
         return datetime.now() > self.expiration_time
 
 
+class KeyStatus(Enum):
+    MISSING = auto()
+    EXPIRED = auto()
+    VALID = auto()
+
 class QuickCache(BaseCache):
     """
     In-Memory Cache.
@@ -71,7 +77,7 @@ class QuickCache(BaseCache):
     SUCCESS_KEY_DELETE_MANY_MSG = "Deleted multiple keys successfully"
     SUCCESS_EVICTION_MSG = "Cache capacity enforced. Items evicted to make room"
     SUCCESS_CACHE_CLEAR_MSG = "Cache cleared successfully"
-    SUCCESS_CACHE_METRICS_RESET_MSG = "Cache metricscleared successfully"
+    SUCCESS_CACHE_METRICS_RESET_MSG = "Cache metrics cleared successfully"
 
     def __init__(
         self,
@@ -120,59 +126,63 @@ class QuickCache(BaseCache):
     def __repr__(self) -> str:
         return f"<QuickCache(size={self.size()}, max_size={self.max_cache_size}, policy='{self.config.eviction_policy}')>"
 
-    def get(self, key: str) -> CacheResponse:
+    def get(self, key: str) -> Any:
+        """ Returns the value of a valid key in cache else raise exceptions """
+
         self.metrics.record_get()
 
         with self._lock:
+            status = self._inspect_key(key)
 
-            if key not in self.cache:
+            if status is KeyStatus.MISSING:
                 self.metrics.record_miss()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
+                raise KeyNotFound(key=key)
 
-            if self._check_key_validity_and_remove_expired(key) is False:
+            if status is KeyStatus.EXPIRED:
                 self.metrics.record_miss()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
+                raise KeyExpired(key=key)
 
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_access(self.cache, key)
 
             self.metrics.record_hit()
-            return CacheResponse(True, self.cache[key].value)
+            return self.cache[key].value
 
-    def set(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
-        """This function works as Upsert."""
-        if self._is_ttl_valid(ttl=ttl_sec):
+    def set(self, key: str, value: Any, ttl_sec: int = None) -> None:
+        """ Upsert a key, if no ttl provides, uses the default value """
+
+        if ttl_sec is None:
+            ttl = self.config.default_ttl
+        elif self._is_ttl_valid(ttl_sec):
             ttl = int(ttl_sec)
         else:
-            ttl = self.config.default_ttl
+            raise InvalidTTL(ttl=ttl_sec)
 
         with self._lock:
             self._internal_set(key, value, ttl)
 
             logger.debug(f"Key '{key}' set.")
 
-            return CacheResponse(success=True, message=self.SUCCESS_KEY_SET_MSG)
 
-    def add(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
+    def add(self, key: str, value: Any, ttl_sec: int = None) -> None:
+        """ Insert the key only if no valid key exists """
+
         with self._lock:
 
-            if not ttl_sec:
+            if ttl_sec is None:
                 ttl = self.config.default_ttl
+            elif self._is_ttl_valid(ttl=ttl_sec) is True:
+                ttl = int(ttl_sec)
             else:
-                if self._is_ttl_valid(ttl_sec):
-                    ttl = int(ttl_sec)
+                raise InvalidTTL(ttl=ttl_sec)
+            
+            status = self._inspect_key(key=key)
 
-            if key in self.cache:
-
-                if self._check_key_validity_and_remove_expired(key) is True:
-                    # If the key is VALID, we cannot add a duplicate.
-
-                    # SYNC THE METRICS
-                    # Record a failed set operation.
-                    self.metrics.record_failed_op()
-
-                    return CacheResponse(False, self.ERROR_KEY_EXISTS_MSG)
-
+            if status is KeyStatus.VALID:
+                self.metrics.record_failed_op()
+                raise KeyAlreadyExists(key=key)
+            
+            # status is MISSING or EXPIRED → allowed to add
             if self.size() >= self.max_cache_size:
                 self._ensure_capacity()
 
@@ -180,7 +190,7 @@ class QuickCache(BaseCache):
             self.cache[key] = CacheEntry(
                 value=value,
                 expiration_time=datetime.now() + timedelta(seconds=ttl),
-                ttl=ttl_sec,
+                ttl=ttl,
             )
 
             logger.debug(f"Key '{key}' added.")
@@ -194,26 +204,34 @@ class QuickCache(BaseCache):
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_update(self.cache, key)
 
-            return CacheResponse(True, self.SUCCESS_KEY_ADD_MSG)
 
-    def update(self, key: str, value: Any, ttl_sec: int) -> CacheResponse:
+    def update(self, key: str, value: Any, ttl_sec: int) -> None:
+        """Updates the value of an existing valid key. Raises if key doesn't exist or is expired."""
+
         with self._lock:
 
-            if self._is_ttl_valid(ttl_sec):
+            if ttl_sec is None:
+                ttl = self.config.default_ttl
+            elif self._is_ttl_valid(ttl=ttl_sec) is True:
                 ttl = int(ttl_sec)
-
-            if key not in self.cache:
+            else:
+                raise InvalidTTL(ttl=ttl_sec)
+            
+            status = self._inspect_key(key=key)
+            
+            if status is KeyStatus.MISSING:
                 self.metrics.record_failed_op()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
+                raise KeyNotFound(key=key)
 
-            if self._check_key_validity_and_remove_expired(key) is False:
+            if status is KeyStatus.EXPIRED:
                 self.metrics.record_failed_op()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
+                raise KeyExpired(key=key)
 
+            # Perform the update, as a valid key is present
             self.cache[key] = CacheEntry(
                 value=value,
                 expiration_time=datetime.now() + timedelta(seconds=ttl),
-                ttl=ttl_sec,
+                ttl=ttl,
             )
 
             logger.debug(f"Key '{key}' updated.")
@@ -227,16 +245,21 @@ class QuickCache(BaseCache):
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys_by_delta(delta=0)
 
-            return CacheResponse(True, self.SUCCESS_KEY_UPDATE_MSG)
+    def delete(self, key: str) -> None:
+        """ Deletes a key from the cache. Raises if key doesn't exist or is expired """
 
-    def delete(self, key: str) -> CacheResponse:
         with self._lock:
-            if key not in self.cache:
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
+            status = self._inspect_key(key=key)
 
-            if self._check_key_validity_and_remove_expired(key) is False:
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
+            if status is KeyStatus.MISSING:
+                self.metrics.record_miss()
+                raise KeyNotFound(key=key)
 
+            if status is KeyStatus.EXPIRED:
+                self.metrics.record_miss()
+                raise KeyExpired(key=key)
+
+            # Delete the valid key
             self.cache.pop(key)
 
             logger.debug(f"Key '{key}' manually deleted.")
@@ -247,129 +270,135 @@ class QuickCache(BaseCache):
             self.metrics.update_total_keys(self.size())
             self.metrics.update_valid_keys_by_delta(delta=-1)
 
-            return CacheResponse(True, self.SUCCESS_KEY_DELETE_MSG)
 
-    def set_many(self, data: dict[str, Any], ttl_sec: int = None) -> CacheResponse:
-        """Bulk operation using 'Set' (Upsert) logic."""
-        if self._is_ttl_valid(ttl=ttl_sec):
+    def set_many(self, data: dict[str, Any], ttl_sec: int = None) -> None:
+        """
+        Bulk upsert multiple keys. Raises InvalidTTL if TTL is invalid.
+        Returns None on success.
+        """
+
+        if ttl_sec is None:
+            ttl = self.config.default_ttl
+        elif self._is_ttl_valid(ttl=ttl_sec) is True:
             ttl = int(ttl_sec)
         else:
-            ttl = self.config.default_ttl
+            raise InvalidTTL(ttl=ttl_sec)
 
         with self._lock:
             for key, value in data.items():
-                # We use the internal method that doesn't care about ghosts or existing keys
+                # We use the internal method that doesn't care about missing or expired keys
                 self._internal_set(key, value, ttl)
 
-        return CacheResponse(
-            success=True,
-            message=f"{self.SUCCESS_KEY_SET_MANY_MSG} : TOTAL SET: {len(data)}",
-        )
-
     def get_many(self, keys: list[str]) -> dict[str, Any]:
+        """
+        Retrieve multiple keys from the cache.
+        Expired or missing keys are skipped.
+        Returns a dictionary of only valid keys to their values.
+        """
         results = {}
 
         with self._lock:
-            # Record the overall bulk operation
+            # Record only the overall bulk operation
             self.metrics.record_get()
 
             for key in keys:
-                # Case A: Missing Key
-                if key not in self.cache:
-                    self.metrics.record_miss()
-                    continue
+                status = self._inspect_key(key=key)
 
-                # Case B: Ghost Key (Expired)
-                if not self._check_key_validity_and_remove_expired(key):
-                    # no need to record metrics here, the funciton is alrady doing that
-                    continue
-                else:
-                    # Case C: Valid Hit
+                if status is KeyStatus.VALID:
+                    results[key] = self.cache[key].value
                     self.metrics.record_hit()
-
-                # EVICTION POLICY HOOK
-                self.eviction_policy.on_access(self.cache, key)
-
-                results[key] = self.cache[key].value
+                    # Eviction policy hook
+                    self.eviction_policy.on_access(self.cache, key)
+                else:
+                    # Missing or expired keys: record a miss
+                    self.metrics.record_miss()
 
         return results
 
-    def delete_many(self, keys: list[str]) -> CacheResponse:
+    def delete_many(self, keys: list[str]) -> None:
         """
-        Deletes multiple keys.
-        Does not error if keys are missing; ensures they are removed.
+        Deletes multiple keys from the cache in a best-effort way.
+        Missing or expired keys are skipped. Returns None.
+        Logs a warning if any keys were missing or expired.
         """
-
-        deleted_count = 0
 
         with self._lock:
-            for key in keys:
-                if self._check_key_validity_and_remove_expired(key=key) is True:
-                    self.cache.pop(key=key)
-                    deleted_count = deleted_count + 1
 
+            skipped_keys = []
+
+            for key in keys:
+                status = self._inspect_key(key=key)
+                if status is KeyStatus.VALID:
+                    self.cache.pop(key=key)
+                    logger.debug(f"Key '{key}' deleted in bulk operation.")
                     # Record metrics
                     self.metrics.record_manual_deletion()
                     self.metrics.update_valid_keys_by_delta(-1)
-
+                
                 else:
-                    continue
+                    skipped_keys.append(key)
+                    self.metrics.record_miss()
 
             # Record metrics: update the total count
             self.metrics.update_total_keys(self.size())
 
-            return CacheResponse(
-                success=True,
-                message=f"{self.SUCCESS_KEY_DELETE_MANY_MSG}. Attempted deletion of {len(keys)} keys. {deleted_count} were actually removed.",
-            )
+            if skipped_keys:
+                logger.warning(
+                    f"The following keys were missing or expired and were skipped: {skipped_keys}"
+                )
 
     def size(self) -> int:
+        """ Returns the total size of the cache that includes the expired keys as well """
+
         with self._lock:
             return len(self.cache)
 
     def valid_size(self) -> int:
+        """ Returns the total valid keys in the cache, also does a cleanup before calculating"""
+
         with self._lock:
             self.cleanup()
             return len(self.cache)
 
-    def clear(self) -> CacheResponse:
-        """Wipes all data and resets metrics."""
+    def clear(self) -> None:
+        """ Wipes all data from the cache, do not reset metrics and returns None on success """
+
         with self._lock:
+            cleared_count = len(self.cache)
             self.cache.clear()
+
             # Reset the dynamic metric counters
             self.metrics.update_total_keys(0)
             self.metrics.update_valid_keys(0)
-            return CacheResponse(success=True, message=self.SUCCESS_CACHE_CLEAR_MSG)
+            self.metrics.record_manual_deletions(count=cleared_count)
 
-    def cleanup(self) -> dict:
+            logger.info(f"Cache cleared. Removed {cleared_count} items.")
+
+    def cleanup(self) -> None:
         """
-        1. Removes all expired items.
-        2. Syncs physical and logical metrics.
-        3. Returns a summary of what was done.
+        - Removes all expired items.
+        - Syncs physical and logical metrics.
+        - Returns a summary of what was done.
         """
+        removed_count = 0
+
         with self._lock:
-            initial_physical = self.size()
 
             # Perform the sweep
             for key in list(self.cache.keys()):
                 # This helper handles the deletion and the 'expired_removal' count
-                self._check_key_validity_and_remove_expired(key)
+                status = self._inspect_key(key=key)
+                if status is KeyStatus.EXPIRED:
+                    removed_count = removed_count + 1
 
             final_count = self.size()
-            removed_count = initial_physical - final_count
 
             # SYNC THE METRICS
             # After a full sweep, physical length and valid size are identical.
             self.metrics.update_total_keys(final_count)  # Total Length
             self.metrics.update_valid_keys(final_count)  # Valid Size
 
-            logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
-
-            return {
-                "success": True,
-                "items_removed": removed_count,
-                "current_size": final_count,
-            }
+            #logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
 
     def stop(self) -> None:
         """Gracefully stops the background cleanup thread."""
@@ -389,11 +418,18 @@ class QuickCache(BaseCache):
 
     def save_to_disk(
         self, filepath: str = None, use_timestamp: bool = False
-    ) -> CacheResponse:
+    ) -> None:
+        """
+        Saves cache data to disk.
+        Raises CacheSaveError on failure.
+        """
 
         timestamp = (
-            use_timestamp if use_timestamp is not None else self.config.cache_timestamps
+            use_timestamp
+            if use_timestamp is not None
+            else self.config.cache_timestamps
         )
+
 
         with self._lock:
             if not self.serializer.is_binary:
@@ -401,21 +437,25 @@ class QuickCache(BaseCache):
             else:
                 data_to_serialize = self.cache
 
-            try:
-                file_path = self.cache_file_manager.resolve_path(
-                    user_input=filepath,
-                    extension=self.serializer.extension,
-                    use_timestamp=timestamp,
-                )
-                serialized_data = self.serializer.serialize(data_to_serialize)
-                self.cache_file_manager.write(path=file_path, data=serialized_data)
-            except Exception as e:
-                logger.error("Failed to save cache to disk.", exc_info=True)
-                return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
+        try:
+            file_path = self.cache_file_manager.resolve_path(
+                user_input=filepath,
+                extension=self.serializer.extension,
+                use_timestamp=timestamp,
+            )
+            serialized_data = self.serializer.serialize(data_to_serialize)
+            self.cache_file_manager.write(path=file_path, data=serialized_data)
 
-            return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
+        except Exception as e:
+            raise CacheSaveError(file_path if "file_path" in locals() else filepath, e) from e
 
-    def load_from_disk(self, filepath: str = None):
+    def load_from_disk(self, filepath: str = None) -> None:
+        """
+        Loads cache data from disk.
+        Raises an exception if loading fails.
+        Returns None on success.
+        """
+
         try:
 
             file_path = self.cache_file_manager.resolve_path(
@@ -431,6 +471,7 @@ class QuickCache(BaseCache):
 
             with self._lock:
                 if not self.serializer.is_binary:
+                    # We have to do this, because non binary serializers cannot serialize datetime properly and they are being handled from_dict() func
                     new_cache = OrderedDict()
                     for k, v in loaded_data.items():
                         entry = CacheEntry.from_dict(v)
@@ -440,32 +481,41 @@ class QuickCache(BaseCache):
                 else:
                     self.cache = loaded_data
 
-                # Do a cleanup here, it will automatically remove the expired entries and set the metrics
-                self.cleanup()
-
-            return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
+                # Sync physical metrics only
+                total = len(self.cache)
+                self.metrics.reset()
+                self.metrics.update_total_keys(total)
+                self.metrics.update_valid_keys(total)
 
         except Exception as e:
-            logger.error("Failed to save cache to disk.", exc_info=True)
-            return CacheResponse(
-                success=False,
-                message=f"{self.ERROR_FILE_LOAD_MSG} : {str(e)}",
-            )
+            raise CacheLoadError(filepath, e) from e
 
-    def get_metrics_snapshot(self):
+    def get_metrics_snapshot(self) -> dict:
+        """
+        Returns a snapshot of the current cache metrics.
+        The returned dictionary is a read-only snapshot representing the
+        cache state at the time of the call.
+        """
         with self._lock:
             return self.metrics.snapshot()
 
-    def reset_metrics(self):
+    def reset_metrics(self) -> None:
+        """
+        Resets all cache metrics to their initial state.
+        This clears counters such as hits, misses, evictions, and key counts.
+        Does not affect cache contents.
+        """
+
         with self._lock:
             self.metrics.reset()
-            return CacheResponse(
-                success=True, message=self.SUCCESS_CACHE_METRICS_RESET_MSG
-            )
 
     def save_metrics_to_disk(
         self, filepath: str = None, use_timestamp: bool = False
-    ) -> CacheResponse:
+    ) -> None:
+        """
+        Saves the current cache metrics snapshot to disk.
+        Raises on failure.
+        """
 
         timestamp = (
             use_timestamp
@@ -482,17 +532,16 @@ class QuickCache(BaseCache):
                 extension=self.metrics_serializer.extension,
                 use_timestamp=timestamp,
             )
+
             serialized_data = self.metrics_serializer.serialize(metrics_data)
             self.cache_metrics_file_manager.write(path=file_path, data=serialized_data)
-            return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
 
         except Exception as e:
-            logger.error("Failed to save metrics to disk.", exc_info=True)
-            return CacheResponse(
-                success=False, message=f"{self.ERROR_FILE_SAVE_MSG} : {str(e)}"
-            )
+            raise CacheMetricsSaveError(filepath or "unknown", e) from e
+
 
     def _is_ttl_valid(self, ttl: int) -> bool:
+        """ Returns True if ttl is present, and is an integer """
         if not ttl:
             return False
 
@@ -505,17 +554,18 @@ class QuickCache(BaseCache):
             return False
 
         return True
-
-    def _check_key_validity_and_remove_expired(self, key: str) -> bool:
+    
+    def _inspect_key(self, key: str) -> KeyStatus:
         """
-        Checks if a key is valid. If it's expired, it removes it.
-        Returns True if the key is valid and still in cache.
-        Returns False if the key was missing or pruned.
+        Inspects key state.
+        Handles expiration removal + metrics.
+        Does NOT raise.
+        it mutates metrics and must never be called twice for same expired key
         """
         entry = self.cache.get(key)
 
         if entry is None:
-            return False
+            return KeyStatus.MISSING
 
         if entry.is_expired():
             self.cache.pop(key)
@@ -524,21 +574,35 @@ class QuickCache(BaseCache):
             # After a deletion, we need to update the 'expired_removals' count and the total keys
             # We will also update the valid keys metric since we dont know if the background cleanup had caught onto or not
             # If we don't decrement it there, your current_valid_keys will stay artificially high until the next full cleanup() runs
+
             self.metrics.record_expired_removal()
             self.metrics.update_total_keys(len(self.cache))
-            self.metrics.update_valid_keys_by_delta(
-                delta=-1
-            )  # decrease valid keys by 1
+            self.metrics.update_valid_keys_by_delta(-1)
 
-            return False
+            return KeyStatus.EXPIRED
 
-        return True
+        return KeyStatus.VALID
 
-    def _internal_set(self, key, value, ttl):
-        is_new = key not in self.cache
-        is_ghost = (not is_new) and (
-            not self._check_key_validity_and_remove_expired(key=key)
-        )
+    def _internal_set(self, key: str, value: Any, ttl: int) -> None:
+        """
+        Insert or update a cache entry without performing validation or public API checks.
+
+        This method handles the core logic for setting a key in the cache:
+        - Determines whether the key is new, expired (ghost), or already valid
+        - Enforces cache capacity constraints when inserting new or expired keys
+        - Computes and assigns the expiration time based on the provided TTL
+        - Updates the eviction policy
+        - Records and synchronizes cache metrics
+
+        This method is intended for internal use only and assumes that all
+        required validation (such as key/value checks) has already been performed
+        by the caller.
+        """
+
+        status = self._inspect_key(key)
+
+        is_new = status is KeyStatus.MISSING
+        is_ghost = status is KeyStatus.EXPIRED
 
         # ENFORCE CAPACITY
         if (is_new or is_ghost) and self.size() >= self.max_cache_size:
@@ -558,7 +622,7 @@ class QuickCache(BaseCache):
             self.metrics.update_valid_keys_by_delta(1)
         elif is_ghost:
             # Since the ghost was removed by the helper, total_keys count
-            # is already updated inside _check_key_validity_and_remove_expired.
+            # is already updated inside _inspect_key.
             # We just need to sync the new total and increment valid count.
             self.metrics.update_total_keys(len(self.cache))
             self.metrics.update_valid_keys_by_delta(1)
@@ -566,10 +630,25 @@ class QuickCache(BaseCache):
             # It was a valid update to an existing key - sizes don't change!
             pass
 
-    def _ensure_capacity(self) -> tuple[bool, str]:
+    def _ensure_capacity(self) -> None:
+        """
+        Ensure the cache size does not exceed the configured maximum capacity.
+        This method is invoked when inserting a new entry would cause the cache
+        to exceed `max_cache_size`. It performs the following steps:
+        - Triggers a cleanup pass to remove expired entries
+        - Repeatedly evicts entries using the configured eviction policy until
+        the cache size is within capacity
+        - Records eviction events and synchronizes cache metrics
+        -Eviction is guaranteed to complete unless the eviction policy fails,
+        in which case an exception is propagated.
+        -This method mutates the cache and metrics in place and is intended
+        for internal use only.
+        """
+
         logger.warning(
             f"Cache capacity ({self.max_cache_size}) reached. Evicting items."
         )
+
         self.cleanup()
 
         eviction_happened = False
@@ -585,7 +664,6 @@ class QuickCache(BaseCache):
             self.metrics.update_total_keys(new_size)
             self.metrics.update_valid_keys(new_size)
 
-        return (True, self.SUCCESS_EVICTION_MSG)
 
     def _background_cleanup(self) -> None:
         """Background task that runs periodically to remove expired items."""
@@ -608,7 +686,7 @@ class QuickCache(BaseCache):
         finally:
             logger.info("Background cleanup thread has shut down.")
 
-    def print(self):
+    def print(self) -> None:
         with self._lock:
 
             self.cleanup()
