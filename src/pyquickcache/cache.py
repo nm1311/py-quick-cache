@@ -13,10 +13,8 @@ from .config import QuickCacheConfig
 from .backend import FileManager
 from .metrics import CacheMetrics, NoOpMetrics
 from .exceptions import KeyExpired, KeyNotFound, KeyAlreadyExists, InvalidTTL, CacheLoadError, CacheSaveError, CacheMetricsSaveError
-from .service import CacheResponse
 
 import logging
-
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -60,24 +58,6 @@ class QuickCache(BaseCache):
     """
     In-Memory Cache.
     """
-
-    # Class-level constants
-    ERROR_TTL_INVALID_MSG = "TTL must be a positive natural number"
-    ERROR_KEY_NOT_EXIST_MSG = "Key doesn't exist or is expired"
-    ERROR_KEY_EXISTS_MSG = "A valid Key already exists"
-    ERROR_FILE_SAVE_MSG = "An error occured while saving the file"
-    ERROR_FILE_LOAD_MSG = "An error occured while loading the file"
-    SUCCESS_FILE_SAVE_MSG = "File saved successfully"
-    SUCCESS_FILE_LOAD_MSG = "File loaded successfully"
-    SUCCESS_KEY_ADD_MSG = "Key added successfully"
-    SUCCESS_KEY_SET_MSG = "Key set successfully"
-    SUCCESS_KEY_SET_MANY_MSG = "Successfully synchronized multiple keys to cache."
-    SUCCESS_KEY_UPDATE_MSG = "Key updated successfully"
-    SUCCESS_KEY_DELETE_MSG = "Key deleted successfully"
-    SUCCESS_KEY_DELETE_MANY_MSG = "Deleted multiple keys successfully"
-    SUCCESS_EVICTION_MSG = "Cache capacity enforced. Items evicted to make room"
-    SUCCESS_CACHE_CLEAR_MSG = "Cache cleared successfully"
-    SUCCESS_CACHE_METRICS_RESET_MSG = "Cache metrics cleared successfully"
 
     def __init__(
         self,
