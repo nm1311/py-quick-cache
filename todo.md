@@ -26,8 +26,7 @@ Objectives:
 [-] Review _internal_set() 
 [-] Take care of zombie threads on application exit.
 [-] Add Logging
-
+[-] How will the users extend the config file and change only the things they need to change and use the other defaults (They can just inherit the QuickConfig and make changes)
 [] Write test cases 
-[] How will the users extend the config file and change only the things they need to change and use the other defaults
 [] Add Custom exceptions
 
