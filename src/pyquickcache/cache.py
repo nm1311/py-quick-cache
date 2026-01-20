@@ -11,6 +11,8 @@ from .registry import default_registries
 from .config import QuickCacheConfig
 from .backend import FileManager
 from .metrics import CacheMetrics, NoOpMetrics
+from .exceptions import KeyExpired, KeyNotFound, InvalidTTL
+from .service import CacheResponse
 
 import logging
 
@@ -48,13 +50,6 @@ class CacheEntry:
         return datetime.now() > self.expiration_time
 
 
-@dataclass(slots=True)
-class CacheResponse:
-    success: bool
-    message: str
-    data: Optional[Any] = None
-
-
 class QuickCache(BaseCache):
     """
     In-Memory Cache.
@@ -75,7 +70,8 @@ class QuickCache(BaseCache):
     SUCCESS_KEY_DELETE_MSG = "Key deleted successfully"
     SUCCESS_KEY_DELETE_MANY_MSG = "Deleted multiple keys successfully"
     SUCCESS_EVICTION_MSG = "Cache capacity enforced. Items evicted to make room"
-    CACHE_CLEAR_MSG = "Cache cleared successfully"
+    SUCCESS_CACHE_CLEAR_MSG = "Cache cleared successfully"
+    SUCCESS_CACHE_METRICS_RESET_MSG = "Cache metricscleared successfully"
 
     def __init__(
         self,
@@ -122,100 +118,40 @@ class QuickCache(BaseCache):
         )
 
     def __repr__(self) -> str:
-        return f"<Cache(size={self.size()}, max_size={self.max_cache_size}, policy='{self.config.eviction_policy}')>"
+        return f"<QuickCache(size={self.size()}, max_size={self.max_cache_size}, policy='{self.config.eviction_policy}')>"
 
-    def _is_ttl_valid(self, ttl: int) -> bool:
-        if not ttl:
-            return False
+    def get(self, key: str) -> CacheResponse:
+        self.metrics.record_get()
 
-        try:
-            ttl = int(ttl)
-        except ValueError:
-            return False
-
-        if ttl <= 0:
-            return False
-
-        return True
-
-    def _check_key_validity_and_remove_expired(self, key: str) -> bool:
-        """
-        Checks if a key is valid. If it's expired, it removes it.
-        Returns True if the key is valid and still in cache.
-        Returns False if the key was missing or pruned.
-        """
-        entry = self.cache.get(key)
-
-        if entry is None:
-            return False
-
-        if entry.is_expired():
-            self.cache.pop(key)
-
-            # SYNC THE METRICS
-            # After a deletion, we need to update the 'expired_removals' count and the total keys
-            # We will also update the valid keys metric since we dont know if the background cleanup had caught onto or not
-            # If we don't decrement it there, your current_valid_keys will stay artificially high until the next full cleanup() runs
-            self.metrics.record_expired_removal()
-            self.metrics.update_total_keys(len(self.cache))
-            self.metrics.update_valid_keys_by_delta(
-                delta=-1
-            )  # decrease valid keys by 1
-
-            return False
-
-        return True
-
-    def cleanup(self) -> dict:
-        """
-        1. Removes all expired items.
-        2. Syncs physical and logical metrics.
-        3. Returns a summary of what was done.
-        """
         with self._lock:
-            initial_physical = self.size()
 
-            # Perform the sweep
-            for key in list(self.cache.keys()):
-                # This helper handles the deletion and the 'expired_removal' count
-                self._check_key_validity_and_remove_expired(key)
+            if key not in self.cache:
+                self.metrics.record_miss()
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
-            final_count = self.size()
-            removed_count = initial_physical - final_count
+            if self._check_key_validity_and_remove_expired(key) is False:
+                self.metrics.record_miss()
+                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
 
-            # SYNC THE METRICS
-            # After a full sweep, physical length and valid size are identical.
-            self.metrics.update_total_keys(final_count)  # Total Length
-            self.metrics.update_valid_keys(final_count)  # Valid Size
+            # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
+            self.eviction_policy.on_access(self.cache, key)
 
-            logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
+            self.metrics.record_hit()
+            return CacheResponse(True, self.cache[key].value)
 
-            return {
-                "success": True,
-                "items_removed": removed_count,
-                "current_size": final_count,
-            }
+    def set(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
+        """This function works as Upsert."""
+        if self._is_ttl_valid(ttl=ttl_sec):
+            ttl = int(ttl_sec)
+        else:
+            ttl = self.config.default_ttl
 
-    def _ensure_capacity(self) -> tuple[bool, str]:
-        logger.warning(
-            f"Cache capacity ({self.max_cache_size}) reached. Evicting items."
-        )
-        self.cleanup()
+        with self._lock:
+            self._internal_set(key, value, ttl)
 
-        eviction_happened = False
+            logger.debug(f"Key '{key}' set.")
 
-        while self.size() >= self.max_cache_size:
-            evicted_key = self.eviction_policy.select_eviction_key(self.cache)
-            self.cache.pop(evicted_key)
-            self.metrics.record_eviction()
-            eviction_happened = True
-
-        if eviction_happened:
-            new_size = self.size()
-            self.metrics.update_total_keys(new_size)
-            self.metrics.update_valid_keys(new_size)
-
-        return (True, self.SUCCESS_EVICTION_MSG)
+            return CacheResponse(success=True, message=self.SUCCESS_KEY_SET_MSG)
 
     def add(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
         with self._lock:
@@ -293,25 +229,6 @@ class QuickCache(BaseCache):
 
             return CacheResponse(True, self.SUCCESS_KEY_UPDATE_MSG)
 
-    def get(self, key: str) -> CacheResponse:
-        self.metrics.record_get()
-
-        with self._lock:
-
-            if key not in self.cache:
-                self.metrics.record_miss()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
-
-            if self._check_key_validity_and_remove_expired(key) is False:
-                self.metrics.record_miss()
-                return CacheResponse(False, self.ERROR_KEY_NOT_EXIST_MSG)
-
-            # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
-            self.eviction_policy.on_access(self.cache, key)
-
-            self.metrics.record_hit()
-            return CacheResponse(True, self.cache[key].value)
-
     def delete(self, key: str) -> CacheResponse:
         with self._lock:
             if key not in self.cache:
@@ -331,170 +248,6 @@ class QuickCache(BaseCache):
             self.metrics.update_valid_keys_by_delta(delta=-1)
 
             return CacheResponse(True, self.SUCCESS_KEY_DELETE_MSG)
-
-    def _internal_set(self, key, value, ttl):
-        is_new = key not in self.cache
-        is_ghost = (not is_new) and (
-            not self._check_key_validity_and_remove_expired(key=key)
-        )
-
-        # ENFORCE CAPACITY
-        if (is_new or is_ghost) and self.size() >= self.max_cache_size:
-            self._ensure_capacity()
-
-        expiration = datetime.now() + timedelta(seconds=ttl)
-        self.cache[key] = CacheEntry(value=value, expiration_time=expiration, ttl=ttl)
-
-        # HOOK FOR EVICTION POLICY
-        self.eviction_policy.on_update(self.cache, key)
-
-        # RECORD METRICS
-        self.metrics.record_set()
-
-        if is_new:
-            self.metrics.update_total_keys(len(self.cache))
-            self.metrics.update_valid_keys_by_delta(1)
-        elif is_ghost:
-            # Since the ghost was removed by the helper, total_keys count
-            # is already updated inside _check_key_validity_and_remove_expired.
-            # We just need to sync the new total and increment valid count.
-            self.metrics.update_total_keys(len(self.cache))
-            self.metrics.update_valid_keys_by_delta(1)
-        else:
-            # It was a valid update to an existing key - sizes don't change!
-            pass
-
-    def set(self, key: str, value: Any, ttl_sec: int = None) -> CacheResponse:
-        """This function works as Upsert."""
-        if self._is_ttl_valid(ttl=ttl_sec):
-            ttl = int(ttl_sec)
-        else:
-            ttl = self.config.default_ttl
-
-        with self._lock:
-            self._internal_set(key, value, ttl)
-
-            logger.debug(f"Key '{key}' set.")
-
-            return CacheResponse(success=True, message=self.SUCCESS_KEY_SET_MSG)
-
-    def print(self):
-        with self._lock:
-
-            self.cleanup()
-
-            print(f"\n\tIn Memory Cache\n")
-            for key in list(self.cache.keys()):
-                print(f"\t\t{key} : {self.cache[key].value} : {self.cache[key].ttl}\n")
-            print(f"\tEND\n")
-
-    def size(self) -> int:
-        with self._lock:
-            return len(self.cache)
-
-    def valid_size(self) -> int:
-        with self._lock:
-            self.cleanup()
-            return len(self.cache)
-
-    def save_to_disk(
-        self, filepath: str = None, use_timestamp: bool = False
-    ) -> CacheResponse:
-
-        timestamp = (
-            use_timestamp if use_timestamp is not None else self.config.cache_timestamps
-        )
-
-        with self._lock:
-            if not self.serializer.is_binary:
-                data_to_serialize = {k: v.to_dict() for k, v in self.cache.items()}
-            else:
-                data_to_serialize = self.cache
-
-            try:
-                file_path = self.cache_file_manager.resolve_path(
-                    user_input=filepath,
-                    extension=self.serializer.extension,
-                    use_timestamp=timestamp,
-                )
-                serialized_data = self.serializer.serialize(data_to_serialize)
-                self.cache_file_manager.write(path=file_path, data=serialized_data)
-            except Exception as e:
-                logger.error("Failed to save cache to disk.", exc_info=True)
-                return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
-
-            return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
-
-    def load_from_disk(self, filepath: str = None):
-        try:
-
-            file_path = self.cache_file_manager.resolve_path(
-                user_input=filepath,
-                extension=self.serializer.extension,
-                use_timestamp=False,
-            )
-            serialized_data = self.cache_file_manager.read(
-                path=file_path, binary=self.serializer.is_binary
-            )
-
-            loaded_data = self.serializer.deserialize(serialized_data)
-
-            with self._lock:
-                if not self.serializer.is_binary:
-                    new_cache = OrderedDict()
-                    for k, v in loaded_data.items():
-                        entry = CacheEntry.from_dict(v)
-                        if entry is not None:
-                            new_cache[k] = entry
-                    self.cache = new_cache
-                else:
-                    self.cache = loaded_data
-
-                # Do a cleanup here, it will automatically remove the expired entries and set the metrics
-                self.cleanup()
-
-            return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
-
-        except Exception as e:
-            logger.error("Failed to save cache to disk.", exc_info=True)
-            return CacheResponse(
-                success=False,
-                message=f"{self.ERROR_FILE_LOAD_MSG} : {str(e)}",
-            )
-
-    def _background_cleanup(self) -> None:
-        """Background task that runs periodically to remove expired items."""
-        # Loop as long as the stop signal hasn't been set
-
-        logger.info("Background cleanup thread started.")
-        try:
-            while not self._stop_event.is_set():
-                # Wait for the interval, but wake up instantly if stop_event is set
-                if self._stop_event.wait(timeout=self.config.cleanup_interval):
-                    break  # Exit loop if wait returned True (event was set)
-
-                logger.debug("Periodic cleanup sweep triggered.")
-                self.cleanup()
-        except Exception as e:
-            logger.error(
-                "Background cleanup thread encountered an unhandled error",
-                exc_info=True,
-            )
-        finally:
-            logger.info("Background cleanup thread has shut down.")
-
-    def get_metrics_snapshot(self):
-        with self._lock:
-            return self.metrics.snapshot()
-
-    def clear(self) -> CacheResponse:
-        """Wipes all data and resets metrics."""
-        with self._lock:
-            self.cache.clear()
-            # Reset the dynamic metric counters
-            self.metrics.update_total_keys(0)
-            self.metrics.update_valid_keys(0)
-            return CacheResponse(success=True, message=self.CACHE_CLEAR_MSG)
 
     def set_many(self, data: dict[str, Any], ttl_sec: int = None) -> CacheResponse:
         """Bulk operation using 'Set' (Upsert) logic."""
@@ -570,6 +323,146 @@ class QuickCache(BaseCache):
                 message=f"{self.SUCCESS_KEY_DELETE_MANY_MSG}. Attempted deletion of {len(keys)} keys. {deleted_count} were actually removed.",
             )
 
+    def size(self) -> int:
+        with self._lock:
+            return len(self.cache)
+
+    def valid_size(self) -> int:
+        with self._lock:
+            self.cleanup()
+            return len(self.cache)
+
+    def clear(self) -> CacheResponse:
+        """Wipes all data and resets metrics."""
+        with self._lock:
+            self.cache.clear()
+            # Reset the dynamic metric counters
+            self.metrics.update_total_keys(0)
+            self.metrics.update_valid_keys(0)
+            return CacheResponse(success=True, message=self.SUCCESS_CACHE_CLEAR_MSG)
+
+    def cleanup(self) -> dict:
+        """
+        1. Removes all expired items.
+        2. Syncs physical and logical metrics.
+        3. Returns a summary of what was done.
+        """
+        with self._lock:
+            initial_physical = self.size()
+
+            # Perform the sweep
+            for key in list(self.cache.keys()):
+                # This helper handles the deletion and the 'expired_removal' count
+                self._check_key_validity_and_remove_expired(key)
+
+            final_count = self.size()
+            removed_count = initial_physical - final_count
+
+            # SYNC THE METRICS
+            # After a full sweep, physical length and valid size are identical.
+            self.metrics.update_total_keys(final_count)  # Total Length
+            self.metrics.update_valid_keys(final_count)  # Valid Size
+
+            logger.debug(f"Cleanup finished. Removed {removed_count} expired items.")
+
+            return {
+                "success": True,
+                "items_removed": removed_count,
+                "current_size": final_count,
+            }
+
+    def stop(self) -> None:
+        """Gracefully stops the background cleanup thread."""
+        if not self._stop_event.is_set():
+            logger.info("Stopping InMemoryCache...")
+            self._stop_event.set()
+
+            # Wait up to 2 seconds for the thread to wrap up
+            self.cleanup_thread.join(timeout=2.0)
+
+            if self.cleanup_thread.is_alive():
+                logger.warning(
+                    "Cleanup thread did not exit within timeout and will be terminated by the OS."
+                )
+            else:
+                logger.info("InMemoryCache stopped gracefully.")
+
+    def save_to_disk(
+        self, filepath: str = None, use_timestamp: bool = False
+    ) -> CacheResponse:
+
+        timestamp = (
+            use_timestamp if use_timestamp is not None else self.config.cache_timestamps
+        )
+
+        with self._lock:
+            if not self.serializer.is_binary:
+                data_to_serialize = {k: v.to_dict() for k, v in self.cache.items()}
+            else:
+                data_to_serialize = self.cache
+
+            try:
+                file_path = self.cache_file_manager.resolve_path(
+                    user_input=filepath,
+                    extension=self.serializer.extension,
+                    use_timestamp=timestamp,
+                )
+                serialized_data = self.serializer.serialize(data_to_serialize)
+                self.cache_file_manager.write(path=file_path, data=serialized_data)
+            except Exception as e:
+                logger.error("Failed to save cache to disk.", exc_info=True)
+                return CacheResponse(success=False, message=self.ERROR_FILE_SAVE_MSG)
+
+            return CacheResponse(success=True, message=self.SUCCESS_FILE_SAVE_MSG)
+
+    def load_from_disk(self, filepath: str = None):
+        try:
+
+            file_path = self.cache_file_manager.resolve_path(
+                user_input=filepath,
+                extension=self.serializer.extension,
+                use_timestamp=False,
+            )
+            serialized_data = self.cache_file_manager.read(
+                path=file_path, binary=self.serializer.is_binary
+            )
+
+            loaded_data = self.serializer.deserialize(serialized_data)
+
+            with self._lock:
+                if not self.serializer.is_binary:
+                    new_cache = OrderedDict()
+                    for k, v in loaded_data.items():
+                        entry = CacheEntry.from_dict(v)
+                        if entry is not None:
+                            new_cache[k] = entry
+                    self.cache = new_cache
+                else:
+                    self.cache = loaded_data
+
+                # Do a cleanup here, it will automatically remove the expired entries and set the metrics
+                self.cleanup()
+
+            return CacheResponse(success=True, message=self.SUCCESS_FILE_LOAD_MSG)
+
+        except Exception as e:
+            logger.error("Failed to save cache to disk.", exc_info=True)
+            return CacheResponse(
+                success=False,
+                message=f"{self.ERROR_FILE_LOAD_MSG} : {str(e)}",
+            )
+
+    def get_metrics_snapshot(self):
+        with self._lock:
+            return self.metrics.snapshot()
+
+    def reset_metrics(self):
+        with self._lock:
+            self.metrics.reset()
+            return CacheResponse(
+                success=True, message=self.SUCCESS_CACHE_METRICS_RESET_MSG
+            )
+
     def save_metrics_to_disk(
         self, filepath: str = None, use_timestamp: bool = False
     ) -> CacheResponse:
@@ -599,18 +492,128 @@ class QuickCache(BaseCache):
                 success=False, message=f"{self.ERROR_FILE_SAVE_MSG} : {str(e)}"
             )
 
-    def stop(self) -> None:
-        """Gracefully stops the background cleanup thread."""
-        if not self._stop_event.is_set():
-            logger.info("Stopping InMemoryCache...")
-            self._stop_event.set()
+    def _is_ttl_valid(self, ttl: int) -> bool:
+        if not ttl:
+            return False
 
-            # Wait up to 2 seconds for the thread to wrap up
-            self.cleanup_thread.join(timeout=2.0)
+        try:
+            ttl = int(ttl)
+        except ValueError:
+            return False
 
-            if self.cleanup_thread.is_alive():
-                logger.warning(
-                    "Cleanup thread did not exit within timeout and will be terminated by the OS."
-                )
-            else:
-                logger.info("InMemoryCache stopped gracefully.")
+        if ttl <= 0:
+            return False
+
+        return True
+
+    def _check_key_validity_and_remove_expired(self, key: str) -> bool:
+        """
+        Checks if a key is valid. If it's expired, it removes it.
+        Returns True if the key is valid and still in cache.
+        Returns False if the key was missing or pruned.
+        """
+        entry = self.cache.get(key)
+
+        if entry is None:
+            return False
+
+        if entry.is_expired():
+            self.cache.pop(key)
+
+            # SYNC THE METRICS
+            # After a deletion, we need to update the 'expired_removals' count and the total keys
+            # We will also update the valid keys metric since we dont know if the background cleanup had caught onto or not
+            # If we don't decrement it there, your current_valid_keys will stay artificially high until the next full cleanup() runs
+            self.metrics.record_expired_removal()
+            self.metrics.update_total_keys(len(self.cache))
+            self.metrics.update_valid_keys_by_delta(
+                delta=-1
+            )  # decrease valid keys by 1
+
+            return False
+
+        return True
+
+    def _internal_set(self, key, value, ttl):
+        is_new = key not in self.cache
+        is_ghost = (not is_new) and (
+            not self._check_key_validity_and_remove_expired(key=key)
+        )
+
+        # ENFORCE CAPACITY
+        if (is_new or is_ghost) and self.size() >= self.max_cache_size:
+            self._ensure_capacity()
+
+        expiration = datetime.now() + timedelta(seconds=ttl)
+        self.cache[key] = CacheEntry(value=value, expiration_time=expiration, ttl=ttl)
+
+        # HOOK FOR EVICTION POLICY
+        self.eviction_policy.on_update(self.cache, key)
+
+        # RECORD METRICS
+        self.metrics.record_set()
+
+        if is_new:
+            self.metrics.update_total_keys(len(self.cache))
+            self.metrics.update_valid_keys_by_delta(1)
+        elif is_ghost:
+            # Since the ghost was removed by the helper, total_keys count
+            # is already updated inside _check_key_validity_and_remove_expired.
+            # We just need to sync the new total and increment valid count.
+            self.metrics.update_total_keys(len(self.cache))
+            self.metrics.update_valid_keys_by_delta(1)
+        else:
+            # It was a valid update to an existing key - sizes don't change!
+            pass
+
+    def _ensure_capacity(self) -> tuple[bool, str]:
+        logger.warning(
+            f"Cache capacity ({self.max_cache_size}) reached. Evicting items."
+        )
+        self.cleanup()
+
+        eviction_happened = False
+
+        while self.size() >= self.max_cache_size:
+            evicted_key = self.eviction_policy.select_eviction_key(self.cache)
+            self.cache.pop(evicted_key)
+            self.metrics.record_eviction()
+            eviction_happened = True
+
+        if eviction_happened:
+            new_size = self.size()
+            self.metrics.update_total_keys(new_size)
+            self.metrics.update_valid_keys(new_size)
+
+        return (True, self.SUCCESS_EVICTION_MSG)
+
+    def _background_cleanup(self) -> None:
+        """Background task that runs periodically to remove expired items."""
+        # Loop as long as the stop signal hasn't been set
+
+        logger.info("Background cleanup thread started.")
+        try:
+            while not self._stop_event.is_set():
+                # Wait for the interval, but wake up instantly if stop_event is set
+                if self._stop_event.wait(timeout=self.config.cleanup_interval):
+                    break  # Exit loop if wait returned True (event was set)
+
+                logger.debug("Periodic cleanup sweep triggered.")
+                self.cleanup()
+        except Exception as e:
+            logger.error(
+                "Background cleanup thread encountered an unhandled error",
+                exc_info=True,
+            )
+        finally:
+            logger.info("Background cleanup thread has shut down.")
+
+    def print(self):
+        with self._lock:
+
+            self.cleanup()
+
+            print(f"\n\tIn Memory Cache\n")
+            for key in list(self.cache.keys()):
+                print(f"\t\t{key} : {self.cache[key].value} : {self.cache[key].ttl}\n")
+            print(f"\tEND\n")

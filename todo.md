@@ -1,5 +1,7 @@
 Objectives:
 
+- ver 0.1.0
+
 [-] Store key-value pairs in a dictionary
 [-] Implement TTL (Time To Live) functionality for cache entries
 [-] Remove expired entries automatically
@@ -28,5 +30,36 @@ Objectives:
 [-] Add Logging
 [-] How will the users extend the config file and change only the things they need to change and use the other defaults (They can just inherit the QuickConfig and make changes)
 [] Write test cases 
-[] Add Custom exceptions
+[] Refine readme
+[] Upload on PyPI
+[] Documentation
+[] New eviction policies : LFU and FIFO
 
+
+
+- ver 0.1.1: 
+
+[] Add Custom exceptions
+[] Add a switch to respond with a CacheResponse or returning values or raising exceptions. Create a common _respond() to handle this behavious
+[] Update tests to test for exceptions
+
+
+
+cleanup 
+add
+update
+get
+delete
+set
+size
+validsize
+save_to_disk
+load_from_disk
+clear
+get_metrics_snapshot
+clear_metrics
+set_many
+get_many
+delete_many
+save_metrics_to_disk
+stop
