@@ -194,7 +194,7 @@ class QuickCache(BaseCache):
             # --- PLUGGABLE HOOK FOR EVICTION POLICY ---
             self.eviction_policy.on_add(self.cache, key)
 
-    def update(self, key: str, value: Any, ttl_sec: int) -> None:
+    def update(self, key: str, value: Any, ttl_sec: int = None) -> None:
         """Updates the value of an existing valid key. Raises if key doesn't exist or is expired."""
 
         with self._lock:
