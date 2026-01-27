@@ -3,7 +3,10 @@ import pickle
 
 from .base_serializer import BaseSerializer
 
+# from ..registry.decorators import register_serializer
 
+
+# @register_serializer("pickle")
 class PickleSerializer(BaseSerializer):
 
     @property

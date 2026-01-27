@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 
 
-class EvictionPolicy(ABC):
+class BaseEvictionPolicy(ABC):
     """
     Strategy interface for cache eviction policies.
     Implementations (FIFO, LRU, LFU, etc.) receive lifecycle callbacks
@@ -15,10 +15,11 @@ class EvictionPolicy(ABC):
 
     @abstractmethod
     def on_add(self, cache: OrderedDict, key: str) -> None:
-        """Called when a new key is inserted into the cache.
-                This is triggered only when the key did not previously exist
-                (or was expired and removed).
-        ."""
+        """
+        Called when a new key is inserted into the cache.
+        This is triggered only when the key did not previously exist
+        (or was expired and removed).
+        """
         pass
 
     @abstractmethod

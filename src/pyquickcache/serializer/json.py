@@ -3,7 +3,10 @@ import json
 
 from .base_serializer import BaseSerializer
 
+# from ..registry.decorators import register_serializer
 
+
+# @register_serializer("json")
 class JsonSerializer(BaseSerializer):
 
     @property

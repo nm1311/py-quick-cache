@@ -1,8 +1,11 @@
 from collections import OrderedDict
-from .base_eviction_policy import EvictionPolicy
+from .base_eviction_policy import BaseEvictionPolicy
+
+# from ..registry.decorators import register_eviction_policy
 
 
-class LFUEvictionPolicy(EvictionPolicy):
+# @register_eviction_policy("lfu")
+class LFUEvictionPolicy(BaseEvictionPolicy):
     """
     - Least Frequently Used (LFU) Eviction Policy.
     - Evicts the least frequently used item when the cache is full.
@@ -11,6 +14,7 @@ class LFUEvictionPolicy(EvictionPolicy):
     """
 
     def __init__(self):
+        """--- Initialize LFU Data Structures ---"""
         # keys -> frequency
         self.freq: dict[str, int] = {}
 
@@ -21,6 +25,9 @@ class LFUEvictionPolicy(EvictionPolicy):
         self.min_freq: int = 0
 
     def on_add(self, cache, key) -> None:
+        """
+        Initialize frequency for new key
+        """
         frequency = 1
 
         # Track frequency
@@ -37,12 +44,15 @@ class LFUEvictionPolicy(EvictionPolicy):
         self.min_freq = frequency
 
     def on_update(self, cache: OrderedDict, key: str) -> None:
+        """Update frequency on update"""
         self._touch(key=key)
 
     def on_access(self, cache: OrderedDict, key: str) -> None:
+        """Update frequency on access"""
         self._touch(key=key)
 
     def on_delete(self, cache, key) -> None:
+        """Remove key from frequency tracking"""
         freq = self.freq.pop(key)
 
         bucket = self.freq_table[freq]
@@ -57,6 +67,7 @@ class LFUEvictionPolicy(EvictionPolicy):
                 self.min_freq = min(self.freq_table.keys(), default=0)
 
     def select_eviction_key(self, cache: OrderedDict) -> str:
+        """Evict least frequently used key (ties broken by LRU)"""
         if not cache:
             raise RuntimeError("Eviction requested on empty cache")
 
@@ -65,6 +76,7 @@ class LFUEvictionPolicy(EvictionPolicy):
         return next(iter(bucket))
 
     def _touch(self, key: str) -> None:
+        """Helper to update frequency of a key on access/update"""
         old_freq = self.freq[key]
         new_freq = old_freq + 1
         self.freq[key] = new_freq
