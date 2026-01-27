@@ -9,7 +9,7 @@ if __name__ == "__main__":
     # Loading from disk if available
     status = my_cache.load_from_disk(filepath="cache_storage/cache_data.json")
     print(status)
-    my_cache.print()
+    my_cache._debug_print()
     time.sleep(2)
 
     status = my_cache.add("city1", "Delhi", 500)
@@ -22,26 +22,26 @@ if __name__ == "__main__":
     print(status)
     status = my_cache.size()
     print(f"Cache Size: {status}")
-    my_cache.print()
+    my_cache._debug_print()
     status = my_cache.get("city")
     print(status)
     status = my_cache.update("city", "Los Angeles", 1000)
     print(status)
-    my_cache.print()
+    my_cache._debug_print()
     status = my_cache.delete("city")
     print(status)
     status = my_cache.size()
     print(f"Cache Size: {status}")
-    my_cache.print()
+    my_cache._debug_print()
     status = my_cache.get("city")
     print(status)
     status = my_cache.add("country", "USA", 300)
     print(status)
-    my_cache.print()
+    my_cache._debug_print()
     time.sleep(4)
     status = my_cache.cleanup()
     print(status)
-    my_cache.print()
+    my_cache._debug_print()
     status = my_cache.get("country")
     print(status)
 
@@ -63,7 +63,7 @@ if __name__ == "__main__":
         data=bulk_data, ttl_sec=2
     )  # Short TTL for testing ghosts
     print(f"Status: {status.message} | Details: {status.data}")
-    my_cache.print()
+    my_cache._debug_print()
 
     # 2. Testing get_many (Hit/Miss/Ghost Logic)
     # city1 is valid, city100 doesn't exist
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     # Let's add fresh data and then delete a subset
     my_cache.set_many({"alpha": 1, "beta": 2, "gamma": 3})
     print("\nCache before delete_many:")
-    my_cache.print()
+    my_cache._debug_print()
 
     keys_to_delete = ["alpha", "gamma", "non_existent"]
     print(f"Deleting {keys_to_delete}...")
