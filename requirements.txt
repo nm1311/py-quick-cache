@@ -31,7 +31,6 @@ pluggy==1.6.0
 pycparser==3.0
 Pygments==2.19.2
 pyproject_hooks==1.2.0
--e git+ssh://git@github-personal/nm1311/py-quick-cache.git@496885a93b2a3dfec802f0f8e32c81699c2b0936#egg=pyquickcache
 pytest==9.0.2
 pytokens==0.4.0
 readme_renderer==44.0
