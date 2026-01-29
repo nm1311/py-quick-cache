@@ -16,33 +16,29 @@ class QuickCacheConfig:
         cleanup_interval (int): Interval in seconds to perform automatic cleanup of expired entries.
 
         serializer (str): Name of the serializer to use for storing cache data. Default is 'pickle'.
+        eviction_policy (str): Eviction policy to use when cache exceeds max_size. Default is 'lru'.
+
         storage_dir (str): Directory where cache files are stored. Default is 'cache_storage'.
         filename (str): Name of the file to store cache data. Default is 'cache_data'.
         cache_timestamps (bool): Whether to store timestamps for cache entries. Default is False.
-
-        eviction_policy (str): Eviction policy to use when cache exceeds max_size. Default is 'lru'.
 
         enable_metrics (bool): Whether to enable metrics tracking. Default is True.
         metrics_serializer (str): Serializer for metrics data. Default is 'json'.
         metrics_storage_dir (str): Directory to store metrics files. Default is 'cache_metrics'.
         metrics_filename (str): Filename for metrics storage. Default is 'metrics'.
         cache_metrics_timestamps (bool): Whether to store timestamps for metrics entries. Default is False.
-
-    INTERNAL:
-        Used internally by QuickCache to configure behavior; can be customized
-        by users when initializing the cache.
     """
 
     max_size: int = 50
     default_ttl: int = 500
     cleanup_interval: int = 50
 
+    eviction_policy: str = "lru"
     serializer: str = "pickle"
+    
     storage_dir: str = "cache_storage"
     filename: str = "cache_data"
     cache_timestamps: bool = False
-
-    eviction_policy: str = "lru"
 
     enable_metrics: bool = True
     metrics_serializer: bool = "json"
