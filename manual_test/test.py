@@ -5,7 +5,6 @@ from pyquickcache import QuickCache
 from pyquickcache.exceptions import (
     KeyNotFound,
     KeyExpired,
-    InvalidTTL,
 )
 
 cache = QuickCache()

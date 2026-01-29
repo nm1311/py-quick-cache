@@ -1,6 +1,6 @@
 # 🚀 PyQuickCache
 
-**PyQuickCache** is a production‑grade, thread‑safe, in‑memory caching
+**PyQuickCache** is a thread‑safe, in‑memory caching
 library for Python featuring TTL expiration, pluggable eviction
 policies, persistence, metrics, and extensibility via a clean
 registry‑based architecture.
