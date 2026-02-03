@@ -1,9 +1,42 @@
 from typing import Type, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..backend import BaseCacheBackend
     from ..eviction_policy.base import BaseEvictionPolicy
     from ..serializer.base import BaseSerializer
 
+
+def register_cache_backend(name: str):
+    """
+    Class decorator to register a custom cache backend.
+
+    Args:
+        name (str): The name under which the cache backend will be registered.
+
+    Returns:
+        Callable[[Type[BaseCacheBackend]], Type[BaseCacheBackend]]:
+            A decorator that registers the given class as a cache backend.
+
+    Raises:
+        TypeError: If the decorated class does not inherit from BaseCacheBackend.
+
+    INTERNAL:
+        Uses runtime import to avoid circular dependencies.
+    """
+
+    from ..backend import BaseCacheBackend
+    from .registry import _register_cache_backend as _register
+
+    def decorator(cls: Type["BaseCacheBackend"]) -> Type["BaseCacheBackend"]:
+        if not issubclass(cls, BaseCacheBackend):
+            raise TypeError(
+                f"Cache backend must inherit from BaseCacheBackend, got {cls.__name__}"
+            )
+
+        _register(name, cls)
+        return cls
+
+    return decorator
 
 def register_eviction_policy(name: str):
     """

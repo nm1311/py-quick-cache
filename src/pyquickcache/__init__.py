@@ -7,7 +7,7 @@ pluggable eviction policies, persistence, and metrics.
 This package exposes the public caching API.
 """
 
-# Trigger registration of built-in serializers & eviction policies
+# Trigger registration of built-in backends, serializers & eviction policies
 from ._bootstrap import *
 
 from .quick_cache import QuickCache

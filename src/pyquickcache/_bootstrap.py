@@ -14,5 +14,6 @@ INTERNAL:
     not need to import this directly.
 """
 
-from . import serializer
+from . import backend
 from . import eviction_policy
+from . import serializer

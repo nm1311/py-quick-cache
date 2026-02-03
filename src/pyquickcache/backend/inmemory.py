@@ -17,6 +17,7 @@ from ..exceptions import KeyExpired, KeyNotFound, KeyAlreadyExists
 
 from ._cache_entry import CacheEntry
 
+from ..registry.decorators import register_cache_backend
 
 class KeyStatus(Enum):
     """Internal enum representing the state of a cache key."""
@@ -25,7 +26,7 @@ class KeyStatus(Enum):
     EXPIRED = auto()
     VALID = auto()
 
-
+@register_cache_backend("inmemory")
 class InMemoryBackend(
     BaseCacheBackend,
     BulkOperationsMixin,
@@ -60,10 +61,10 @@ class InMemoryBackend(
         with self._lock:
             key_status = self._inspect_key(key=key)
             if key_status is KeyStatus.MISSING:
-                raise KeyNotFound
+                raise KeyNotFound(key=key)
 
             if key_status is KeyStatus.EXPIRED:
-                raise KeyExpired
+                raise KeyExpired(key=key)
 
             return self._store[key]
 
@@ -84,7 +85,7 @@ class InMemoryBackend(
             key_status = self._inspect_key(key=key)
 
             if key_status is KeyStatus.VALID:
-                raise KeyAlreadyExists
+                raise KeyAlreadyExists(key=key)
 
             if key_status is KeyStatus.EXPIRED:
                 self._store.pop(key)
@@ -104,11 +105,11 @@ class InMemoryBackend(
             key_status = self._inspect_key(key=key)
 
             if key_status is KeyStatus.MISSING:
-                raise KeyNotFound
+                raise KeyNotFound(key=key)
 
             if key_status is KeyStatus.EXPIRED:
                 self._store.pop(key)
-                raise KeyExpired
+                raise KeyExpired(key=key)
 
             new_entry = self._build_entry(value=value, ttl=ttl)
             self._write_entry(key=key, entry=new_entry)
@@ -125,10 +126,10 @@ class InMemoryBackend(
             key_status = self._inspect_key(key=key)
 
             if key_status is KeyStatus.MISSING:
-                raise KeyNotFound
+                raise KeyNotFound(key=key)
 
             if key_status is KeyStatus.EXPIRED:
-                raise KeyExpired
+                raise KeyExpired(key=key)
 
             self._store.pop(key)
 
@@ -245,9 +246,9 @@ class InMemoryBackend(
         with self._lock:
             key_status = self._inspect_key(key=key)
             if key_status is KeyStatus.MISSING:
-                raise KeyNotFound
+                raise KeyNotFound(key=key)
             if key_status is KeyStatus.EXPIRED:
-                raise KeyExpired
+                raise KeyExpired(key=key)
 
             entry = self._store[key]
             remaining = (entry.expiration_time - utcnow()).total_seconds()
@@ -264,9 +265,9 @@ class InMemoryBackend(
         with self._lock:
             key_status = self._inspect_key(key=key)
             if key_status is KeyStatus.MISSING:
-                raise KeyNotFound
+                raise KeyNotFound(key=key)
             if key_status is KeyStatus.EXPIRED:
-                raise KeyExpired
+                raise KeyExpired(key=key)
 
             entry = self._store[key]
             entry.ttl = ttl
