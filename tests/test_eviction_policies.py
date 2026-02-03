@@ -3,7 +3,6 @@ import pytest
 from pyquickcache import QuickCache, QuickCacheConfig
 from pyquickcache.exceptions import KeyNotFound
 
-
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------

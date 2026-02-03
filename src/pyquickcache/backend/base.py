@@ -5,7 +5,7 @@ from typing import Any, Optional, Iterable, Dict
 class BaseCacheBackend(ABC):
     """Abstract base class for cache storage backends.
 
-    A cache backend is responsible **only** for storing and retrieving data.
+    A cache backend is responsible for storage and key-level expiration mechanics, but not eviction policies or cache semantics.
     It does not implement eviction policies, metrics, logging, or public API
     semantics.
 
@@ -41,7 +41,7 @@ class BaseCacheBackend(ABC):
         pass
 
     @abstractmethod
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    def set(self, key: str, value: Any, ttl: int) -> None:
         """Set a value for a key, overwriting any existing value.
 
         Args:
@@ -56,7 +56,7 @@ class BaseCacheBackend(ABC):
         pass
 
     @abstractmethod
-    def add(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    def add(self, key: str, value: Any, ttl: int) -> None:
         """Add a value for a key only if the key does not already exist.
 
         Args:
@@ -73,7 +73,7 @@ class BaseCacheBackend(ABC):
         pass
 
     @abstractmethod
-    def update(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    def update(self, key: str, value: Any, ttl: int) -> None:
         """Update the value of an existing key.
 
         Args:
@@ -125,125 +125,11 @@ class BaseCacheBackend(ABC):
         """
         pass
 
-    # ─────────────────────────
-    # Bulk operations
-    # ─────────────────────────
-
-    @abstractmethod
-    def get_many(self, keys: Iterable[str]) -> Dict[str, Any]:
-        """Retrieve multiple keys at once.
-
-        Args:
-            keys (Iterable[str]): An iterable of cache keys.
+    def purge_expired(self) -> int:
+        """
+        Optional: Remove expired keys from the cache and return how many were removed.
 
         Returns:
-            Dict[str, Any]: A mapping of keys to values for keys that exist.
-                Missing or expired keys are omitted.
+            int: Number of keys removed.
         """
-        pass
-
-    @abstractmethod
-    def set_many(
-        self,
-        mapping: Dict[str, Any],
-        ttl: Optional[int] = None,
-    ) -> None:
-        """Set multiple key-value pairs at once.
-
-        Args:
-            mapping (Dict[str, Any]): A mapping of keys to values.
-            ttl (Optional[int]): Optional TTL applied to all keys.
-
-        Returns:
-            None
-        """
-        pass
-
-    @abstractmethod
-    def delete_many(self, keys: Iterable[str]) -> None:
-        """Delete multiple keys at once.
-
-        Args:
-            keys (Iterable[str]): An iterable of cache keys.
-
-        Returns:
-            None
-        """
-        pass
-
-    # ─────────────────────────
-    # Introspection
-    # ─────────────────────────
-
-    @abstractmethod
-    def size(self) -> int:
-        """Return the number of keys stored in the backend.
-
-        Returns:
-            int: Number of stored keys.
-        """
-        pass
-
-    @abstractmethod
-    def keys(self) -> Iterable[str]:
-        """Return an iterable of all keys stored in the backend.
-
-        Returns:
-            Iterable[str]: All cache keys.
-        """
-        pass
-
-    # ─────────────────────────
-    # TTL / expiration handling
-    # ─────────────────────────
-
-    @abstractmethod
-    def ttl(self, key: str) -> Optional[int]:
-        """Return the remaining TTL for a key.
-
-        Args:
-            key (str): The cache key.
-
-        Returns:
-            Optional[int]: Remaining TTL in seconds, or None if the key
-                does not expire.
-
-        Raises:
-            KeyNotFound: If the key does not exist.
-        """
-        pass
-
-    @abstractmethod
-    def expire(self, key: str, ttl: int) -> None:
-        """Set or update the TTL for an existing key.
-
-        Args:
-            key (str): The cache key.
-            ttl (int): New TTL in seconds.
-
-        Raises:
-            KeyNotFound: If the key does not exist.
-
-        Returns:
-            None
-        """
-        pass
-
-    # ─────────────────────────
-    # Lifecycle management
-    # ─────────────────────────
-
-    @abstractmethod
-    def close(self) -> None:
-        """Release backend resources and perform cleanup.
-
-        This method is called when the cache is shutting down and may be used
-        to:
-            - Close file handles
-            - Flush buffers
-            - Close network connections
-
-        Returns:
-            None
-        """
-        pass
+        return 0  # Some backends override, others can leave default

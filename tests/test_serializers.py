@@ -4,7 +4,6 @@ import pytest
 from pyquickcache import QuickCache, QuickCacheConfig
 from pyquickcache.exceptions import KeyNotFound, CacheSaveError
 
-
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
@@ -63,6 +62,7 @@ def test_json_serializer_handles_primitives():
         assert cache.get("str") == "hello"
         assert cache.get("bool") is True
 
+
 # ---------------------------------------------------------------------
 # Pickle Serializer
 # ---------------------------------------------------------------------
@@ -92,11 +92,11 @@ def test_pickle_serializer_save_and_load():
 # Dummy custom object to be pickled by a test
 # We need to define it outside the test since pickle cannot serialize local objects
 class Dummy:
-        def __init__(self, value):
-            self.value = value
+    def __init__(self, value):
+        self.value = value
 
-        def __eq__(self, other):
-            return isinstance(other, Dummy) and self.value == other.value
+    def __eq__(self, other):
+        return isinstance(other, Dummy) and self.value == other.value
 
 
 def test_pickle_serializer_handles_custom_objects():
@@ -125,7 +125,6 @@ def test_pickle_serializer_rejects_unpicklable_objects():
 
     with pytest.raises(CacheSaveError):
         cache.save_to_disk()
-
 
 
 # ---------------------------------------------------------------------

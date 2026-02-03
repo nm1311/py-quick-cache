@@ -8,6 +8,7 @@ from typing import Type, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..serializer import BaseSerializer
 
+
 class FileSystemStorage(StorageBackend):
     """
     INTERNAL.
@@ -50,9 +51,7 @@ class FileSystemStorage(StorageBackend):
                 extension=self.serializer.extension,
                 use_timestamp=False,
             )
-            raw = self.file_manager.read(
-                path, binary=self.serializer.is_binary
-            )
+            raw = self.file_manager.read(path, binary=self.serializer.is_binary)
             return self.serializer.deserialize(raw)
         except Exception as e:
             raise CacheLoadError(self.filepath, e) from e

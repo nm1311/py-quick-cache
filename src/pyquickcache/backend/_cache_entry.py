@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 from ..utils.helpers import utcnow
 
+
 @dataclass(slots=True)
 class CacheEntry:
     """

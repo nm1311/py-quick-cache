@@ -189,7 +189,7 @@ class QuickCache(BaseCache):
             default_dir=self.config.storage_dir,
             default_filename=self.config.filename,
         )
-        
+
         self.cache_metrics_file_manager = FileManager(
             default_dir=self.config.metrics_storage_dir,
             default_filename=self.config.metrics_filename,

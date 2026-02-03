@@ -11,7 +11,6 @@ from pyquickcache.registry.registry import (
 from pyquickcache.eviction_policy import BaseEvictionPolicy
 from pyquickcache.serializer import BaseSerializer
 
-
 # ---------------------------------------------------------------------
 # Eviction Policy Registration (Decorator-based)
 # ---------------------------------------------------------------------

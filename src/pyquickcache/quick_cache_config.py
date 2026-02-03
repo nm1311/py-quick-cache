@@ -35,7 +35,7 @@ class QuickCacheConfig:
 
     eviction_policy: str = "lru"
     serializer: str = "pickle"
-    
+
     storage_dir: str = "cache_storage"
     filename: str = "cache_data"
     cache_timestamps: bool = False
